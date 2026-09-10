@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import {
   buildLaunchPlan,
   buildPiPromptArgs,
+  buildResumeLaunchPlan,
   buildSubagentToolAllowlist,
   shellEscape,
   type LaunchPlan,
@@ -187,7 +188,13 @@ describe("launch plan: curated env exports", () => {
     const p = plan(fx, { agent: "worker" }, agentDefs);
     const script = scriptOf(p);
 
-    assert.ok(script.includes(`export PATH=${shellEscape(fx.env.PATH!)}`));
+    // Windows PATH is ";"-separated and must not be re-exported into the bash wrapper —
+    // git-bash converts the inherited Windows PATH itself. See src/launch.ts.
+    if (process.platform === "win32") {
+      assert.ok(!script.includes("export PATH="), "Windows PATH must not be re-exported");
+    } else {
+      assert.ok(script.includes(`export PATH=${shellEscape(fx.env.PATH!)}`));
+    }
     assert.ok(script.includes(`export PI_SUBAGENT_NAME=${shellEscape("Worker")}`));
     assert.ok(script.includes(`export PI_SUBAGENT_ID=${shellEscape("abcd1234")}`));
     assert.ok(script.includes(`export PI_SUBAGENT_SESSION=${shellEscape(p.sessionFile)}`));
@@ -310,11 +317,14 @@ describe("launch plan: pi argv", () => {
     assert.ok(task?.content.includes("You are a worker."));
   });
 
-  it("--tools allowlist always includes caller_ping and subagent_done", () => {
+  it("--tools allowlist always includes child interaction tools", () => {
     const fx = makeFixture();
     const p = plan(fx, {}, { tools: "read,bash" });
     const argv = p.piArgv;
-    assert.equal(argv[argv.indexOf("--tools") + 1], "read,bash,caller_ping,subagent_done");
+    assert.equal(
+      argv[argv.indexOf("--tools") + 1],
+      "read,bash,caller_ping,subagent_done,ask_user_question",
+    );
   });
 
   it("omits --tools without an explicit restriction", () => {
@@ -422,6 +432,31 @@ describe("launch plan: structure", () => {
     writeFileSync(scriptPath, scriptOf(p));
     execFileSync("bash", ["-n", scriptPath]); // throws on syntax error
   });
+  it("a resume runs in the cwd its session was created in, not the orchestrator's", () => {
+    const fx = makeFixture();
+    const ownTree = join(fx.root, "child-worktree");
+    mkdirSync(ownTree, { recursive: true });
+    const sessionFile = join(fx.root, "child.jsonl");
+    writeFileSync(
+      sessionFile,
+      `${
+        JSON.stringify({
+          type: "session",
+          id: "child",
+          timestamp: "2026-07-06T11:00:00.000Z",
+          cwd: ownTree,
+        })
+      }\n`,
+    );
+
+    const p = buildResumeLaunchPlan(
+      { sessionPath: sessionFile, name: "Resume" },
+      makeCtx(fx),
+    );
+
+    assert.equal(p.paneStart.cwd, ownTree);
+    assert.ok(scriptOf(p as unknown as LaunchPlan).includes(`cd ${shellEscape(ownTree)}`));
+  });
 });
 
 describe("ported helpers", () => {
@@ -431,10 +466,10 @@ describe("ported helpers", () => {
     assert.equal(shellEscape(""), "''");
   });
 
-  it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
+  it("buildSubagentToolAllowlist preserves requested tools and adds child interaction tools", () => {
     assert.equal(
       buildSubagentToolAllowlist("read,bash,web_search"),
-      "read,bash,web_search,caller_ping,subagent_done",
+      "read,bash,web_search,caller_ping,subagent_done,ask_user_question",
     );
   });
 
@@ -461,6 +496,64 @@ describe("ported helpers", () => {
     assert.deepEqual(
       buildPiPromptArgs({ effectiveSkills: "review", taskDelivery: "direct", taskArg: "do the task" }),
       ["/skill:review", "do the task"],
+    );
+  });
+});
+
+describe("launch plan: task file export", () => {
+  it("exports the task artifact path so a compacted worker can find its task again", () => {
+    const fx = makeFixture();
+    const p = buildLaunchPlan(
+      { name: "Worker", task: "Do the thing", agent: "worker" },
+      { body: "You are a worker.", systemPromptMode: "replace", autoExit: true },
+      makeCtx(fx),
+    );
+    const exported = /export PI_SUBAGENT_TASK_FILE='([^']+)'/.exec(scriptOf(p));
+    assert.ok(exported, "the launch script exports the task file");
+    // The pointer has to land on the TASK artifact, not the system prompt written beside it.
+    const artifact = p.files.find((f) => f.path === exported![1]);
+    assert.ok(artifact, "the exported path is one of the files this plan writes");
+    assert.match(artifact!.content, /Do the thing/);
+  });
+
+  it("refuses to resume a session whose recorded cwd is gone, instead of hanging on pi's prompt", () => {
+    // Measured 2026-09-10: pi (interactive) stops at "cwd from session file does not exist / continue
+    // in current cwd" and a pane launched for an agent never answers it — the 20:14 probe sat there
+    // with zero entries in the session while the tool result said "resumed".
+    const fx = makeFixture();
+    const sessionFile = join(fx.root, "gone.jsonl");
+    const deleted = join(fx.root, "worktrees", "tjew662-city-filter");
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "c", cwd: deleted })}
+`);
+    assert.throws(
+      () => buildResumeLaunchPlan({ sessionPath: sessionFile, name: "Resume" }, makeCtx(fx)),
+      (err: any) => err.name === "ResumeCwdMissingError" && /no longer exists/.test(err.message) && err.message.includes(deleted),
+      "a deleted worktree must be refused with the path named, not launched into a prompt",
+    );
+  });
+
+  it("still resumes into the recorded cwd while it exists", () => {
+    const fx = makeFixture();
+    const sessionFile = join(fx.root, "child-cwd.jsonl");
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "c", cwd: fx.cwd })}
+`);
+    const p = buildResumeLaunchPlan({ sessionPath: sessionFile, name: "Resume" }, makeCtx(fx));
+    assert.equal(p.paneStart.cwd, fx.cwd);
+  });
+
+  it("exports a resumed session's follow-up message as the task file", () => {
+    const fx = makeFixture();
+    const sessionFile = join(fx.root, "child.jsonl");
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "c", cwd: fx.cwd })}\n`);
+    const p = buildResumeLaunchPlan(
+      { sessionPath: sessionFile, name: "Resume", message: "Do the next thing" },
+      makeCtx(fx),
+    );
+    assert.ok(p.resumeMessageFile);
+    assert.ok(
+      scriptOf(p as unknown as LaunchPlan).includes(
+        `export PI_SUBAGENT_TASK_FILE=${shellEscape(p.resumeMessageFile!)}`,
+      ),
     );
   });
 });

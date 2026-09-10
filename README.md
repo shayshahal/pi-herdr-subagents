@@ -68,12 +68,21 @@ Install as a pi package (add to `~/.pi/agent/settings.json`):
 }
 ```
 
+Install the questionnaire extension used by interactive children:
+
+```bash
+pi install npm:@juicesharp/rpiv-ask-user-question
+```
+
 Link and enable the bundled Herdr plugin from the same checkout:
 
 ```bash
 herdr plugin link /path/to/pi-herdr-subagents/herdr-plugin --enabled
 herdr plugin enable pi-herdr-subagents
 ```
+
+The child launcher keeps `ask_user_question` active even when an agent definition has a restricted
+`tools:` list.
 
 The manifest and dispatcher are versioned with the pi extension. The dispatcher is static; each
 spawn selects its generated launch script through a pane-local environment variable.
@@ -205,7 +214,7 @@ Set `PI_HERDR_DIRENV=0` or an explicit `PI_HERDR_LAUNCH_PREFIX` to override.
 | Tool | Description |
 |---|---|
 | `subagent` | Spawn a sub-agent in a dedicated herdr pane (async — returns immediately) |
-| `subagent_resume` | Resume a previous sub-agent session in a new pane (async) |
+| `subagent_resume` | Resume a previous sub-agent session in a new pane (async). The pane runs in the cwd that session was created in, not the orchestrator's — a resume cannot silently pull a child back into the wrong worktree |
 | `subagent_interrupt` | Send Escape to a running subagent's active turn |
 | `subagents_list` | List available agent definitions (project-local `.pi/agents/` overrides global) |
 
@@ -282,6 +291,22 @@ Useful tricks:
   the exact child environment and invocation.
 - Every failure steer carries the child session path; `pi --session <path>` resumes it, or use
   `subagent_resume`.
+- **Failure budget**: after 5 consecutive failed tool calls the child is steered to stop and report
+  instead of retrying (each retry re-bills its whole context). `PI_SUBAGENT_FAILURE_BUDGET=0`
+  disables it, any other integer sets the threshold.
+- **A compaction cannot take the task away**: every launch exports `PI_SUBAGENT_TASK_FILE`, and after
+  a `session_compact` the child is steered back to it. Measured 2026-09-09: six workers compacted
+  and stopped with `firstKeptEntryId: ""` / `retainedTokens: 0`, because pi-blackhole's `minimal`
+  tail behaviour cuts at the last user message and a dispatched worker has exactly one user turn.
+- **A resume of a session whose worktree is gone is refused, not launched**: pi checks the cwd its
+  session file records and, interactively, stops to ask a human whether to continue in the current
+  cwd. A pane launched for an agent has nobody to answer, so the resume would sit on that prompt with
+  the caller told it succeeded (measured 2026-09-10: zero entries written in six minutes). The tool
+  now returns the missing path and the two things that work — recreate it, or dispatch fresh.
+- **A resume is priced before it starts**: the result names the tokens the session last held, and
+  warns past 120k tokens or 60% of the window, whichever comes first — a resume re-sends that whole
+  context on every turn. The absolute gate leads on purpose: this machine's window is 1M, where 60%
+  is 600k and the sessions that cost money run at 100–220k.
 
 ## Known limitations / upstream notes
 

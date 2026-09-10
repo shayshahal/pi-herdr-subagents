@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  compactionTaskNotice,
+  failureBudgetNotice,
+  isFailedToolExecution,
   parseDeniedTools,
+  parseFailureBudget,
   shouldAutoExitOnAgentEnd,
   shouldMarkUserTookOver,
   writeExitSidecar,
@@ -157,6 +161,68 @@ describe("subagent-done: module", () => {
   it("loads standalone and exports a default extension factory", async () => {
     const mod = await import("../subagent-done.ts");
     assert.equal(typeof mod.default, "function");
+  });
+
+  it("keeps Pi's Ctrl+J newline binding free", async () => {
+    const shortcuts: string[] = [];
+    const mod = await import("../subagent-done.ts");
+    mod.default({
+      on: () => {},
+      registerTool: () => {},
+      registerShortcut: (shortcut: string) => shortcuts.push(shortcut),
+      getAllTools: () => [],
+    } as any);
+    assert.deepEqual(shortcuts, ["alt+j"]);
+  });
+});
+
+describe("subagent-done: failure budget", () => {
+  it("treats an isError result and a non-zero shell exit as failures", () => {
+    assert.equal(isFailedToolExecution({ isError: true }), true);
+    assert.equal(isFailedToolExecution({ result: { exitCode: 1 } }), true);
+    assert.equal(isFailedToolExecution({ result: { details: { exitCode: 2 } } }), true);
+    assert.equal(isFailedToolExecution({ result: { exitCode: 0 } }), false);
+    assert.equal(isFailedToolExecution({}), false);
+  });
+
+  it("warns at the budget, then every budget after, and never below it", () => {
+    assert.equal(failureBudgetNotice(4, 5), null);
+    assert.match(failureBudgetNotice(5, 5)!, /BUDGET: 5 consecutive/);
+    assert.equal(failureBudgetNotice(6, 5), null);
+    assert.match(failureBudgetNotice(10, 5)!, /BUDGET: 10 consecutive/);
+  });
+
+  it("is disabled by a budget of 0 and defaulted when unset or invalid", () => {
+    assert.equal(failureBudgetNotice(99, 0), null);
+    assert.equal(parseFailureBudget(undefined), 5);
+    assert.equal(parseFailureBudget("nonsense"), 5);
+    assert.equal(parseFailureBudget("0"), 0);
+  });
+
+  it("steers the child once the failure budget is reached, and a success resets it", async () => {
+    const handlers = new Map<string, (event: any) => void>();
+    const sent: Array<{ content?: string }> = [];
+    const mod = await import("../subagent-done.ts");
+    mod.default({
+      on: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
+      registerTool: () => {},
+      registerShortcut: () => {},
+      getAllTools: () => [],
+      sendMessage: (message: { content?: string }) => sent.push(message),
+    } as any);
+
+    const fail = () => handlers.get("tool_execution_end")!({ isError: true });
+    for (let i = 0; i < 4; i++) fail();
+    assert.equal(sent.length, 0, "nothing before the budget");
+    fail();
+    assert.equal(sent.length, 1, "one steer at the budget");
+    assert.match(sent[0].content!, /consecutive tool failures/);
+
+    handlers.get("tool_execution_end")!({ isError: false });
+    for (let i = 0; i < 4; i++) fail();
+    assert.equal(sent.length, 1, "a success resets the run of failures");
+    fail();
+    assert.equal(sent.length, 2, "a fresh run warns again");
   });
 });
 
@@ -521,5 +587,47 @@ describe("subagent-done: agent_end writes .exit sidecar on clean auto-exit", () 
     let sidecarExists = false;
     try { readFileSync(`${sessionFile}.exit`); sidecarExists = true; } catch {}
     assert.equal(sidecarExists, false, "must not signal completion before children settle");
+  });
+});
+
+describe("subagent-done: task survives a compaction", () => {
+  it("points the child back at its task file, and stays quiet without one", () => {
+    assert.equal(compactionTaskNotice(undefined), null);
+    assert.equal(compactionTaskNotice(""), null);
+    const notice = compactionTaskNotice("C:/artifacts/ctx/worker-1.md")!;
+    assert.match(notice, /Re-read C:\/artifacts\/ctx\/worker-1\.md before you continue/);
+    assert.match(notice, /call subagent_done/);
+  });
+
+  it("steers with the task file after session_compact", async () => {
+    const handlers = new Map<string, (event: any) => void>();
+    const sent: Array<{ content?: string }> = [];
+    const saved = process.env.PI_SUBAGENT_TASK_FILE;
+    process.env.PI_SUBAGENT_TASK_FILE = "C:/artifacts/ctx/worker-1.md";
+    const mod = await import("../subagent-done.ts");
+    mod.default({
+      on: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
+      registerTool: () => {},
+      registerShortcut: () => {},
+      getAllTools: () => [],
+      sendMessage: (message: { content?: string }) => sent.push(message),
+    } as any);
+
+    try {
+      assert.ok(handlers.has("session_compact"), "the extension must subscribe to compaction");
+      assert.equal(sent.length, 0, "nothing before a compaction");
+      handlers.get("session_compact")!({ type: "session_compact" });
+      assert.equal(sent.length, 1);
+      assert.match(sent[0].content!, /worker-1\.md/);
+
+      // A worker launched without an artifact (direct delivery, or a bare resume) has no file to
+      // point at and must not be steered with a path that does not exist.
+      process.env.PI_SUBAGENT_TASK_FILE = "";
+      handlers.get("session_compact")!({ type: "session_compact" });
+      assert.equal(sent.length, 1, "no steer without a task file");
+    } finally {
+      if (saved === undefined) delete process.env.PI_SUBAGENT_TASK_FILE;
+      else process.env.PI_SUBAGENT_TASK_FILE = saved;
+    }
   });
 });

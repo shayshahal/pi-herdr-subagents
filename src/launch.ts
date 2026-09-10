@@ -23,7 +23,7 @@
 // buildSubagentToolAllowlist / buildPiPromptArgs / shellEscape and artifact
 // conventions ported from pi-interactive-subagents (MIT, HazAT)
 // pi-extension/subagents/{index.ts,cmux.ts} @ fix/launch-verify-retry.
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,15 +120,18 @@ export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-const SUBAGENT_CONTROL_TOOLS = ["caller_ping", "subagent_done"] as const;
+const SUBAGENT_INTERACTION_TOOLS = [
+  "caller_ping",
+  "subagent_done",
+  "ask_user_question",
+] as const;
 
 /**
  * Build the child --tools allowlist.
  *
  * Pi 0.70+ applies --tools to built-in, extension, and custom tools. If a
  * subagent definition restricts tools to e.g. "read,bash,write", the child
- * control tools from subagent-done.ts would otherwise be hidden, leaving a
- * manually resumed or user-touched subagent unable to call subagent_done.
+ * interaction tools would otherwise be hidden.
  */
 export function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
   const requested = (effectiveTools ?? "")
@@ -139,7 +142,7 @@ export function buildSubagentToolAllowlist(effectiveTools?: string): string | nu
   if (requested.length === 0) return null;
 
   const allow = new Set(requested);
-  for (const tool of SUBAGENT_CONTROL_TOOLS) {
+  for (const tool of SUBAGENT_INTERACTION_TOOLS) {
     allow.add(tool);
   }
 
@@ -411,7 +414,9 @@ export function buildLaunchPlan(
 
   // ── Curated env exports (never a full env dump) ──
   const exports: string[] = [];
-  if (env.PATH) exports.push(`export PATH=${shellEscape(env.PATH)}`);
+  // Windows PATH (";"-separated, backslashes) is meaningless to the bash wrapper;
+  // git-bash converts the inherited Windows PATH itself, so don't re-export it.
+  if (env.PATH && process.platform !== "win32") exports.push(`export PATH=${shellEscape(env.PATH)}`);
   if (localAgentDir && existsSync(localAgentDir)) {
     exports.push(`export PI_CODING_AGENT_DIR=${shellEscape(localAgentDir)}`);
   } else if (env.PI_CODING_AGENT_DIR) {
@@ -430,6 +435,11 @@ export function buildLaunchPlan(
   }
   exports.push(`export PI_SUBAGENT_SESSION=${shellEscape(sessionFile)}`);
   exports.push(`export PI_SUBAGENT_ID=${shellEscape(id)}`);
+  // The task file survives compaction; the child re-reads it when pi-blackhole
+  // compacts a single-user-turn worker to zero retained messages.
+  if (taskArtifactFile) {
+    exports.push(`export PI_SUBAGENT_TASK_FILE=${shellEscape(taskArtifactFile)}`);
+  }
   // The pane id is only known inside the pane — forward herdr's injected env.
   exports.push('export PI_SUBAGENT_PANE="${HERDR_PANE_ID:-}"');
 
@@ -498,6 +508,58 @@ export function resolveResumeLaunchBehavior(params: { autoExit?: boolean }): {
   return { autoExit, interactive: !autoExit };
 }
 
+/**
+ * The cwd a session was created in, read from pi's own session header.
+ *
+ * A resume that inherits the orchestrator's cwd silently drops the worktree the
+ * child was working in (measured 2026-09-09: 26 of 57 invocations ran from the
+ * main checkout, one of them committing straight to dev). pi records the cwd on
+ * the session's first line, so the child's own tree can win.
+ */
+export function sessionRecordedCwd(sessionPath: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(sessionPath, "r");
+    const buf = Buffer.alloc(8192);
+    const read = readSync(fd, buf, 0, buf.length, 0);
+    const firstLine = buf.subarray(0, read).toString("utf8").split("\n")[0];
+    const cwd = JSON.parse(firstLine)?.cwd;
+    return typeof cwd === "string" && cwd.length > 0 ? cwd : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * The session's recorded cwd is gone — a deleted worktree.
+ *
+ * ⚠ MEASURED 2026-09-10, and it is why this refuses instead of launching: pi sees the same missing
+ * directory (`getMissingSessionCwdIssue`) and, in INTERACTIVE mode, stops to ask a human whether to
+ * continue in the current cwd. A pane launched for an agent has nobody to answer, so the resume sits
+ * on that prompt forever — a probe launched at 20:14 was still sitting there six minutes later, with
+ * zero entries written to the session and a tool result that said merely "resumed". In
+ * non-interactive mode pi exits 1 instead. Neither is a resume, so say so now, with the two things
+ * that actually work: bring the directory back, or dispatch fresh.
+ */
+export class ResumeCwdMissingError extends Error {
+  readonly sessionCwd: string;
+  readonly fallbackCwd: string;
+
+  constructor(sessionCwd: string, fallbackCwd: string) {
+    super(
+      `the session's working directory no longer exists (${sessionCwd}), and pi would stop at a prompt ` +
+        `asking a human whether to continue in ${fallbackCwd} — a pane launched for an agent never ` +
+        `answers it and the run never starts. Recreate that directory (or its worktree), or dispatch a ` +
+        `fresh subagent instead of resuming this one.`,
+    );
+    this.name = "ResumeCwdMissingError";
+    this.sessionCwd = sessionCwd;
+    this.fallbackCwd = fallbackCwd;
+  }
+}
+
 export interface ResumeLaunchPlan {
   id: string;
   name: string;
@@ -524,7 +586,9 @@ export interface ResumeLaunchPlan {
  * Plan a resume launch: pi --session <existing path> -e subagent-done.ts,
  * plus an optional @<artifact> follow-up message. Same wrapper-script
  * machinery (curated env, direnv wrap, exitcode sidecar, hold-open) as
- * buildLaunchPlan; the pane runs in the orchestrator's cwd.
+ * buildLaunchPlan. The pane runs in the cwd the session was created in — the
+ * child's worktree, not the orchestrator's — and in the orchestrator's cwd only
+ * when the session records none.
  *
  * NOTE: the executor must rmSync <sessionPath>.exit and <sessionPath>.exitcode
  * (force: true) before launching — stale sidecars from the previous run would
@@ -539,6 +603,12 @@ export function buildResumeLaunchPlan(
   const id = ctx.id ?? Math.random().toString(16).slice(2, 10);
   const displayName = params.name ?? "Resume";
   const { autoExit, interactive } = resolveResumeLaunchBehavior(params);
+
+  const recordedCwd = sessionRecordedCwd(params.sessionPath);
+  if (recordedCwd && !existsSync(recordedCwd)) {
+    throw new ResumeCwdMissingError(recordedCwd, ctx.parentCwd);
+  }
+  const targetCwd = recordedCwd ?? ctx.parentCwd;
 
   const artifactDir = getArtifactDir(ctx.sessionDir, ctx.sessionId);
   const artifactTimestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -559,7 +629,9 @@ export function buildResumeLaunchPlan(
 
   // ── Curated env exports (never a full env dump) ──
   const exports: string[] = [];
-  if (env.PATH) exports.push(`export PATH=${shellEscape(env.PATH)}`);
+  // Windows PATH (";"-separated, backslashes) is meaningless to the bash wrapper;
+  // git-bash converts the inherited Windows PATH itself, so don't re-export it.
+  if (env.PATH && process.platform !== "win32") exports.push(`export PATH=${shellEscape(env.PATH)}`);
   if (env.PI_CODING_AGENT_DIR) {
     exports.push(`export PI_CODING_AGENT_DIR=${shellEscape(env.PI_CODING_AGENT_DIR)}`);
   }
@@ -569,6 +641,9 @@ export function buildResumeLaunchPlan(
   }
   exports.push(`export PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`);
   exports.push(`export PI_SUBAGENT_ID=${shellEscape(id)}`);
+  if (resumeMessageFile) {
+    exports.push(`export PI_SUBAGENT_TASK_FILE=${shellEscape(resumeMessageFile)}`);
+  }
   exports.push('export PI_SUBAGENT_PANE="${HERDR_PANE_ID:-}"');
 
   const { content: scriptContent, holdOpenSecs } = buildWrapperScript({
@@ -580,7 +655,7 @@ export function buildResumeLaunchPlan(
       ...(resumeMessageFile ? [`# Resume message file: ${resumeMessageFile}`] : []),
     ],
     exports,
-    cwd: ctx.parentCwd,
+    cwd: targetCwd,
     piArgv,
     sessionFile: params.sessionPath,
   });
@@ -597,7 +672,7 @@ export function buildResumeLaunchPlan(
     files,
     paneStart: {
       name: displayName,
-      cwd: ctx.parentCwd,
+      cwd: targetCwd,
       targetPaneId: env.HERDR_PANE_ID,
       direction: "right",
       launchScriptFile,

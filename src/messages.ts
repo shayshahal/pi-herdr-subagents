@@ -403,3 +403,20 @@ export function renderSubagentPing(
     },
   };
 }
+
+/**
+ * Brief-size note for the launch steer, so the orchestrator sees what its dispatch
+ * costs. Measured 2026-09-09: ten walker dispatches carried 24-28KB briefs against a
+ * spec that is six bullets — the agent already holds its own instructions in its
+ * system prompt, and everything past that is re-billed on every turn of the session.
+ */
+export const BRIEF_SIZE_WARN_BYTES = 8 * 1024;
+
+export function briefSizeNote(taskBytes: number): string {
+  const kb = taskBytes / 1024;
+  if (taskBytes <= BRIEF_SIZE_WARN_BYTES) return ` Brief: ${kb.toFixed(1)} KB.`;
+  return (
+    ` Brief: ${kb.toFixed(1)} KB — large. A brief carries an id, paths and a gate; the agent's own` +
+    ` process is already in its system prompt, so anything past that is paid for on every turn.`
+  );
+}

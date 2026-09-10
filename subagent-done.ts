@@ -1,6 +1,6 @@
 /**
  * Extension loaded into every subagent child pi (via `-e <this file>`).
- * - Shows agent identity + available tools as a styled widget above the editor (toggle with Ctrl+J)
+ * - Shows agent identity + available tools as a styled widget above the editor (toggle with Alt+J)
  * - Provides a `subagent_done` tool for autonomous agents to self-terminate
  * - Provides a `caller_ping` tool to ask the parent orchestrator for help
  *
@@ -61,6 +61,57 @@ export function shouldAutoExitOnAgentEnd(
   return true;
 }
 
+/**
+ * Failure budget: consecutive failed tool executions before the child is told to
+ * stop and report instead of retrying. Measured 2026-09-09: a day's 57 worker
+ * invocations carried 28-failure loops and 61 test-runs in one session, each
+ * retry re-billing the whole context. 0 disables the budget.
+ */
+export const DEFAULT_FAILURE_BUDGET = 5;
+
+export function parseFailureBudget(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_FAILURE_BUDGET;
+}
+
+/** A failed tool execution, across the shapes pi reports: `isError`, or a non-zero shell exit. */
+export function isFailedToolExecution(event: { isError?: boolean; result?: any }): boolean {
+  if (event.isError) return true;
+  const code = event.result?.exitCode ?? event.result?.details?.exitCode;
+  return typeof code === "number" && code !== 0;
+}
+
+/** The steer text for a run of failures, or null when it is not a checkpoint. */
+export function failureBudgetNotice(consecutive: number, budget: number): string | null {
+  if (budget <= 0 || consecutive < budget || consecutive % budget !== 0) return null;
+  return [
+    `⛔ BUDGET: ${consecutive} consecutive tool failures.`,
+    "Do not retry the same command again. Stop and make the failure visible:",
+    "write what you tried, what failed, and the exact command output you have,",
+    "then call subagent_done. A session that keeps failing is billed for every retry.",
+  ].join(" ");
+}
+
+/**
+ * What to say after a compaction, when the child's own task is at risk.
+ *
+ * Measured 2026-09-09: six dispatched workers compacted and stopped, each with
+ * `firstKeptEntryId: ""` and `retainedTokens: 0` — a wake with no task. The cause is in
+ * pi-blackhole's compaction policy, not here: its `minimal` tail behaviour cuts at the last user
+ * message, and a dispatched worker has exactly ONE user turn (the task), so the cut lands at index
+ * 0 and it compacts everything, keeping no tail. The summary does not carry the task.
+ *
+ * The task text is on disk, in the artifact the launcher wrote, so the cheap fix is to point back
+ * at it instead of hoping the summary kept it.
+ */
+export function compactionTaskNotice(taskFile: string | undefined): string | null {
+  if (!taskFile) return null;
+  return (
+    `Your context was just compacted and the summary may not carry your task. Re-read ${taskFile} ` +
+    `before you continue. If that task is already complete, write your report and call subagent_done.`
+  );
+}
+
 export function parseDeniedTools(rawValue: string | undefined): string[] {
   return (rawValue ?? "")
     .split(",")
@@ -96,6 +147,8 @@ export default function (pi: ExtensionAPI) {
   const subagentAgent = process.env.PI_SUBAGENT_AGENT ?? "";
   const deniedToolsValue = process.env.PI_DENY_TOOLS;
   const autoExit = process.env.PI_SUBAGENT_AUTO_EXIT === "1";
+  const failureBudget = parseFailureBudget(process.env.PI_SUBAGENT_FAILURE_BUDGET);
+  let consecutiveFailures = 0;
 
   function renderWidget(ctx: { ui: { setWidget: Function } }) {
     ctx.ui.setWidget(
@@ -109,7 +162,7 @@ export default function (pi: ExtensionAPI) {
         if (expanded) {
           // Expanded: full tool list + denied
           const countInfo = theme.fg("dim", ` — ${toolNames.length} available`);
-          const hint = theme.fg("muted", "  (Ctrl+J to collapse)");
+          const hint = theme.fg("muted", "  (Alt+J to collapse)");
 
           const toolList = toolNames
             .map((name: string) => theme.fg("dim", name))
@@ -136,7 +189,7 @@ export default function (pi: ExtensionAPI) {
             denied.length > 0
               ? theme.fg("dim", " · ") + theme.fg("error", `${denied.length} denied`)
               : "";
-          const hint = theme.fg("muted", "  (Ctrl+J to expand)");
+          const hint = theme.fg("muted", "  (Alt+J to expand)");
 
           const content = new Text(`${agentTag}${countInfo}${deniedInfo}${hint}`, 0, 0);
           box.addChild(content);
@@ -232,14 +285,29 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // The failure budget: steer a child out of a retry loop before it re-bills the
+  // whole context again. Fires at the budget, then every budget after.
+  pi.on("tool_execution_end", (event) => {
+    consecutiveFailures = isFailedToolExecution(event) ? consecutiveFailures + 1 : 0;
+    const notice = failureBudgetNotice(consecutiveFailures, failureBudget);
+    if (notice) pi.sendMessage({ customType: "failure-budget", content: notice, display: true });
+  });
+
   // User-driven exits do not pass through a terminal tool or clean agent_end.
   // Do not overwrite a snapshot already published by another terminal path.
   pi.on("session_shutdown", (_event, ctx) => {
     snapshotContextUsage(ctx, true);
   });
 
-  // Toggle expand/collapse with Ctrl+J
-  pi.registerShortcut("ctrl+j", {
+  // pi-blackhole compacts a worker's single user turn away entirely (see
+  // compactionTaskNotice); put the task back in front of the child when it does.
+  pi.on("session_compact", () => {
+    const notice = compactionTaskNotice(process.env.PI_SUBAGENT_TASK_FILE);
+    if (notice) pi.sendMessage({ customType: "task-after-compact", content: notice, display: true }, { triggerTurn: true });
+  });
+
+  // Toggle expand/collapse with Alt+J
+  pi.registerShortcut("alt+j", {
     description: "Toggle subagent tools widget",
     handler: (ctx) => {
       expanded = !expanded;
