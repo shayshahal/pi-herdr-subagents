@@ -499,3 +499,36 @@ describe("ported helpers", () => {
     );
   });
 });
+
+describe("launch plan: task file export", () => {
+  it("exports the task artifact path so a compacted worker can find its task again", () => {
+    const fx = makeFixture();
+    const p = buildLaunchPlan(
+      { name: "Worker", task: "Do the thing", agent: "worker" },
+      { body: "You are a worker.", systemPromptMode: "replace", autoExit: true },
+      makeCtx(fx),
+    );
+    const exported = /export PI_SUBAGENT_TASK_FILE='([^']+)'/.exec(scriptOf(p));
+    assert.ok(exported, "the launch script exports the task file");
+    // The pointer has to land on the TASK artifact, not the system prompt written beside it.
+    const artifact = p.files.find((f) => f.path === exported![1]);
+    assert.ok(artifact, "the exported path is one of the files this plan writes");
+    assert.match(artifact!.content, /Do the thing/);
+  });
+
+  it("exports a resumed session's follow-up message as the task file", () => {
+    const fx = makeFixture();
+    const sessionFile = join(fx.root, "child.jsonl");
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "c", cwd: fx.cwd })}\n`);
+    const p = buildResumeLaunchPlan(
+      { sessionPath: sessionFile, name: "Resume", message: "Do the next thing" },
+      makeCtx(fx),
+    );
+    assert.ok(p.resumeMessageFile);
+    assert.ok(
+      scriptOf(p as unknown as LaunchPlan).includes(
+        `export PI_SUBAGENT_TASK_FILE=${shellEscape(p.resumeMessageFile!)}`,
+      ),
+    );
+  });
+});

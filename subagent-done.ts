@@ -92,6 +92,26 @@ export function failureBudgetNotice(consecutive: number, budget: number): string
   ].join(" ");
 }
 
+/**
+ * What to say after a compaction, when the child's own task is at risk.
+ *
+ * Measured 2026-09-09: six dispatched workers compacted and stopped, each with
+ * `firstKeptEntryId: ""` and `retainedTokens: 0` — a wake with no task. The cause is in
+ * pi-blackhole's compaction policy, not here: its `minimal` tail behaviour cuts at the last user
+ * message, and a dispatched worker has exactly ONE user turn (the task), so the cut lands at index
+ * 0 and it compacts everything, keeping no tail. The summary does not carry the task.
+ *
+ * The task text is on disk, in the artifact the launcher wrote, so the cheap fix is to point back
+ * at it instead of hoping the summary kept it.
+ */
+export function compactionTaskNotice(taskFile: string | undefined): string | null {
+  if (!taskFile) return null;
+  return (
+    `Your context was just compacted and the summary may not carry your task. Re-read ${taskFile} ` +
+    `before you continue. If that task is already complete, write your report and call subagent_done.`
+  );
+}
+
 export function parseDeniedTools(rawValue: string | undefined): string[] {
   return (rawValue ?? "")
     .split(",")
@@ -277,6 +297,13 @@ export default function (pi: ExtensionAPI) {
   // Do not overwrite a snapshot already published by another terminal path.
   pi.on("session_shutdown", (_event, ctx) => {
     snapshotContextUsage(ctx, true);
+  });
+
+  // pi-blackhole compacts a worker's single user turn away entirely (see
+  // compactionTaskNotice); put the task back in front of the child when it does.
+  pi.on("session_compact", () => {
+    const notice = compactionTaskNotice(process.env.PI_SUBAGENT_TASK_FILE);
+    if (notice) pi.sendMessage({ customType: "task-after-compact", content: notice, display: true }, { triggerTurn: true });
   });
 
   // Toggle expand/collapse with Alt+J

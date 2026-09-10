@@ -435,6 +435,11 @@ export function buildLaunchPlan(
   }
   exports.push(`export PI_SUBAGENT_SESSION=${shellEscape(sessionFile)}`);
   exports.push(`export PI_SUBAGENT_ID=${shellEscape(id)}`);
+  // The task file survives compaction; the child re-reads it when pi-blackhole
+  // compacts a single-user-turn worker to zero retained messages.
+  if (taskArtifactFile) {
+    exports.push(`export PI_SUBAGENT_TASK_FILE=${shellEscape(taskArtifactFile)}`);
+  }
   // The pane id is only known inside the pane — forward herdr's injected env.
   exports.push('export PI_SUBAGENT_PANE="${HERDR_PANE_ID:-}"');
 
@@ -604,6 +609,9 @@ export function buildResumeLaunchPlan(
   }
   exports.push(`export PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`);
   exports.push(`export PI_SUBAGENT_ID=${shellEscape(id)}`);
+  if (resumeMessageFile) {
+    exports.push(`export PI_SUBAGENT_TASK_FILE=${shellEscape(resumeMessageFile)}`);
+  }
   exports.push('export PI_SUBAGENT_PANE="${HERDR_PANE_ID:-}"');
 
   const { content: scriptContent, holdOpenSecs } = buildWrapperScript({
