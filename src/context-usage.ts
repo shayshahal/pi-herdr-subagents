@@ -81,3 +81,30 @@ export function consumeContextUsageSidecar(
     rmSync(path, { force: true });
   }
 }
+
+/**
+ * Read a session's last published usage without consuming it. The resume path reads it to
+ * price a resume: a session that ended near its window is re-sent in full on every turn, so
+ * resuming it costs more than a fresh, narrower dispatch (276-turn chains measured 2026-09-09).
+ */
+export function peekContextUsageSidecar(sessionFile: string): ContextUsageSnapshot | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(contextUsagePath(sessionFile), "utf8"));
+    return isContextUsageSnapshot(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Percent of the context window a resume should warn about. */
+export const RESUME_CONTEXT_WARN_PERCENT = 60;
+
+export function resumeContextNote(usage: ContextUsageSnapshot | null): string {
+  if (!usage || usage.tokens === null || usage.percent === null) return "";
+  if (usage.percent < RESUME_CONTEXT_WARN_PERCENT) return "";
+  const k = Math.round(usage.tokens / 1000);
+  return (
+    ` ⚠ That session last held ${k}k tokens (${Math.round(usage.percent)}% of its window), and a resume` +
+    ` re-sends the whole context on every turn. A fresh, narrower dispatch is usually cheaper.`
+  );
+}

@@ -294,6 +294,8 @@ Useful tricks:
 - **Failure budget**: after 5 consecutive failed tool calls the child is steered to stop and report
   instead of retrying (each retry re-bills its whole context). `PI_SUBAGENT_FAILURE_BUDGET=0`
   disables it, any other integer sets the threshold.
+- **A resume is priced before it starts**: the result names the tokens the session last held, and
+  past 60% of its window says so — a resume re-sends that whole context on every turn.
 
 ## Known limitations / upstream notes
 

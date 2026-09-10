@@ -37,7 +37,12 @@ import {
   type HerdrClient,
 } from "./src/herdr/client.ts";
 import { createHerdrEventStream } from "./src/herdr/events.ts";
-import { consumeContextUsageSidecar, contextUsagePath } from "./src/context-usage.ts";
+import {
+  consumeContextUsageSidecar,
+  contextUsagePath,
+  peekContextUsageSidecar,
+  resumeContextNote,
+} from "./src/context-usage.ts";
 import {
   buildLaunchPlan,
   buildResumeLaunchPlan,
@@ -772,6 +777,9 @@ async function executeSubagentResume(
     return errorResult(`Failed to plan resume launch: ${message}`, message);
   }
 
+  // Read the previous run's usage before the sidecar is cleared: it prices this resume.
+  const resumeNote = resumeContextNote(peekContextUsageSidecar(params.sessionPath));
+
   // Stale-sidecar belt & braces: completion signals from the previous run
   // would resolve the new watcher instantly.
   rmSync(`${params.sessionPath}.exit`, { force: true });
@@ -806,7 +814,7 @@ async function executeSubagentResume(
   );
 
   return {
-    content: [{ type: "text" as const, text: `Session "${plan.name}" resumed.` }],
+    content: [{ type: "text" as const, text: `Session "${plan.name}" resumed.${resumeNote}` }],
     details: {
       id: running.id,
       name: plan.name,
