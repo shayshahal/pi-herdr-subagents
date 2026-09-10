@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  briefSizeNote,
   buildOutcomeMessage,
   formatElapsed,
   renderSubagentPing,
@@ -468,5 +469,15 @@ describe("message renderers", () => {
     const output = rendered.render(80).join("\n");
     assert.match(output, /✗/, "should show failure X");
     assert.doesNotMatch(output, /✓/, "should NOT show checkmark");
+  });
+});
+
+describe("messages: brief size note", () => {
+  it("reports the brief size, and names the waste when it is large", () => {
+    assert.equal(briefSizeNote(2048), " Brief: 2.0 KB.");
+    assert.equal(briefSizeNote(8 * 1024), " Brief: 8.0 KB.");
+    const big = briefSizeNote(27_000);
+    assert.match(big, /Brief: 26\.4 KB — large\./);
+    assert.match(big, /paid for on every turn/);
   });
 });

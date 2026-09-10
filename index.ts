@@ -44,6 +44,7 @@ import {
   resolveResumeLaunchBehavior,
 } from "./src/launch.ts";
 import {
+  briefSizeNote,
   buildOutcomeMessage,
   renderSubagentPing,
   renderSubagentResult,
@@ -588,7 +589,8 @@ async function executeSubagentSpawn(
           `Sub-agent "${params.name}" launched and is now running in the background. ` +
           `Do NOT generate or assume any results — you have no idea what the sub-agent will do or produce. ` +
           `The results will be delivered to you automatically as a steer message when the sub-agent finishes. ` +
-          `Until then, move on to other work or tell the user you're waiting.`,
+          `Until then, move on to other work or tell the user you're waiting.` +
+          briefSizeNote(params.task?.length ?? 0),
       },
     ],
     details: {
