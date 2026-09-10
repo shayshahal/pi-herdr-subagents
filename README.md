@@ -299,7 +299,9 @@ Useful tricks:
   and stopped with `firstKeptEntryId: ""` / `retainedTokens: 0`, because pi-blackhole's `minimal`
   tail behaviour cuts at the last user message and a dispatched worker has exactly one user turn.
 - **A resume is priced before it starts**: the result names the tokens the session last held, and
-  past 60% of its window says so — a resume re-sends that whole context on every turn.
+  warns past 120k tokens or 60% of the window, whichever comes first — a resume re-sends that whole
+  context on every turn. The absolute gate leads on purpose: this machine's window is 1M, where 60%
+  is 600k and the sessions that cost money run at 100–220k.
 
 ## Known limitations / upstream notes
 
