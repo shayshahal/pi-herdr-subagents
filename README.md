@@ -294,6 +294,10 @@ Useful tricks:
 - **Failure budget**: after 5 consecutive failed tool calls the child is steered to stop and report
   instead of retrying (each retry re-bills its whole context). `PI_SUBAGENT_FAILURE_BUDGET=0`
   disables it, any other integer sets the threshold.
+- **A compaction cannot take the task away**: every launch exports `PI_SUBAGENT_TASK_FILE`, and after
+  a `session_compact` the child is steered back to it. Measured 2026-09-09: six workers compacted
+  and stopped with `firstKeptEntryId: ""` / `retainedTokens: 0`, because pi-blackhole's `minimal`
+  tail behaviour cuts at the last user message and a dispatched worker has exactly one user turn.
 - **A resume is priced before it starts**: the result names the tokens the session last held, and
   past 60% of its window says so — a resume re-sends that whole context on every turn.
 
