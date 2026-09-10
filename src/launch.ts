@@ -120,15 +120,18 @@ export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-const SUBAGENT_CONTROL_TOOLS = ["caller_ping", "subagent_done"] as const;
+const SUBAGENT_INTERACTION_TOOLS = [
+  "caller_ping",
+  "subagent_done",
+  "ask_user_question",
+] as const;
 
 /**
  * Build the child --tools allowlist.
  *
  * Pi 0.70+ applies --tools to built-in, extension, and custom tools. If a
  * subagent definition restricts tools to e.g. "read,bash,write", the child
- * control tools from subagent-done.ts would otherwise be hidden, leaving a
- * manually resumed or user-touched subagent unable to call subagent_done.
+ * interaction tools would otherwise be hidden.
  */
 export function buildSubagentToolAllowlist(effectiveTools?: string): string | null {
   const requested = (effectiveTools ?? "")
@@ -139,7 +142,7 @@ export function buildSubagentToolAllowlist(effectiveTools?: string): string | nu
   if (requested.length === 0) return null;
 
   const allow = new Set(requested);
-  for (const tool of SUBAGENT_CONTROL_TOOLS) {
+  for (const tool of SUBAGENT_INTERACTION_TOOLS) {
     allow.add(tool);
   }
 
@@ -411,7 +414,9 @@ export function buildLaunchPlan(
 
   // ── Curated env exports (never a full env dump) ──
   const exports: string[] = [];
-  if (env.PATH) exports.push(`export PATH=${shellEscape(env.PATH)}`);
+  // Windows PATH (";"-separated, backslashes) is meaningless to the bash wrapper;
+  // git-bash converts the inherited Windows PATH itself, so don't re-export it.
+  if (env.PATH && process.platform !== "win32") exports.push(`export PATH=${shellEscape(env.PATH)}`);
   if (localAgentDir && existsSync(localAgentDir)) {
     exports.push(`export PI_CODING_AGENT_DIR=${shellEscape(localAgentDir)}`);
   } else if (env.PI_CODING_AGENT_DIR) {
@@ -559,7 +564,9 @@ export function buildResumeLaunchPlan(
 
   // ── Curated env exports (never a full env dump) ──
   const exports: string[] = [];
-  if (env.PATH) exports.push(`export PATH=${shellEscape(env.PATH)}`);
+  // Windows PATH (";"-separated, backslashes) is meaningless to the bash wrapper;
+  // git-bash converts the inherited Windows PATH itself, so don't re-export it.
+  if (env.PATH && process.platform !== "win32") exports.push(`export PATH=${shellEscape(env.PATH)}`);
   if (env.PI_CODING_AGENT_DIR) {
     exports.push(`export PI_CODING_AGENT_DIR=${shellEscape(env.PI_CODING_AGENT_DIR)}`);
   }

@@ -158,6 +158,18 @@ describe("subagent-done: module", () => {
     const mod = await import("../subagent-done.ts");
     assert.equal(typeof mod.default, "function");
   });
+
+  it("keeps Pi's Ctrl+J newline binding free", async () => {
+    const shortcuts: string[] = [];
+    const mod = await import("../subagent-done.ts");
+    mod.default({
+      on: () => {},
+      registerTool: () => {},
+      registerShortcut: (shortcut: string) => shortcuts.push(shortcut),
+      getAllTools: () => [],
+    } as any);
+    assert.deepEqual(shortcuts, ["alt+j"]);
+  });
 });
 
 describe("subagent-done: subagent_done tool writes sidecar and shuts down", () => {

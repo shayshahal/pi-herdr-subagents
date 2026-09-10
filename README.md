@@ -68,12 +68,21 @@ Install as a pi package (add to `~/.pi/agent/settings.json`):
 }
 ```
 
+Install the questionnaire extension used by interactive children:
+
+```bash
+pi install npm:@juicesharp/rpiv-ask-user-question
+```
+
 Link and enable the bundled Herdr plugin from the same checkout:
 
 ```bash
 herdr plugin link /path/to/pi-herdr-subagents/herdr-plugin --enabled
 herdr plugin enable pi-herdr-subagents
 ```
+
+The child launcher keeps `ask_user_question` active even when an agent definition has a restricted
+`tools:` list.
 
 The manifest and dispatcher are versioned with the pi extension. The dispatcher is static; each
 spawn selects its generated launch script through a pane-local environment variable.

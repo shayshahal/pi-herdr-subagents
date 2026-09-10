@@ -187,7 +187,13 @@ describe("launch plan: curated env exports", () => {
     const p = plan(fx, { agent: "worker" }, agentDefs);
     const script = scriptOf(p);
 
-    assert.ok(script.includes(`export PATH=${shellEscape(fx.env.PATH!)}`));
+    // Windows PATH is ";"-separated and must not be re-exported into the bash wrapper —
+    // git-bash converts the inherited Windows PATH itself. See src/launch.ts.
+    if (process.platform === "win32") {
+      assert.ok(!script.includes("export PATH="), "Windows PATH must not be re-exported");
+    } else {
+      assert.ok(script.includes(`export PATH=${shellEscape(fx.env.PATH!)}`));
+    }
     assert.ok(script.includes(`export PI_SUBAGENT_NAME=${shellEscape("Worker")}`));
     assert.ok(script.includes(`export PI_SUBAGENT_ID=${shellEscape("abcd1234")}`));
     assert.ok(script.includes(`export PI_SUBAGENT_SESSION=${shellEscape(p.sessionFile)}`));
@@ -310,11 +316,14 @@ describe("launch plan: pi argv", () => {
     assert.ok(task?.content.includes("You are a worker."));
   });
 
-  it("--tools allowlist always includes caller_ping and subagent_done", () => {
+  it("--tools allowlist always includes child interaction tools", () => {
     const fx = makeFixture();
     const p = plan(fx, {}, { tools: "read,bash" });
     const argv = p.piArgv;
-    assert.equal(argv[argv.indexOf("--tools") + 1], "read,bash,caller_ping,subagent_done");
+    assert.equal(
+      argv[argv.indexOf("--tools") + 1],
+      "read,bash,caller_ping,subagent_done,ask_user_question",
+    );
   });
 
   it("omits --tools without an explicit restriction", () => {
@@ -431,10 +440,10 @@ describe("ported helpers", () => {
     assert.equal(shellEscape(""), "''");
   });
 
-  it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
+  it("buildSubagentToolAllowlist preserves requested tools and adds child interaction tools", () => {
     assert.equal(
       buildSubagentToolAllowlist("read,bash,web_search"),
-      "read,bash,web_search,caller_ping,subagent_done",
+      "read,bash,web_search,caller_ping,subagent_done,ask_user_question",
     );
   });
 
