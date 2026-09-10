@@ -214,7 +214,7 @@ Set `PI_HERDR_DIRENV=0` or an explicit `PI_HERDR_LAUNCH_PREFIX` to override.
 | Tool | Description |
 |---|---|
 | `subagent` | Spawn a sub-agent in a dedicated herdr pane (async — returns immediately) |
-| `subagent_resume` | Resume a previous sub-agent session in a new pane (async) |
+| `subagent_resume` | Resume a previous sub-agent session in a new pane (async). The pane runs in the cwd that session was created in, not the orchestrator's — a resume cannot silently pull a child back into the wrong worktree |
 | `subagent_interrupt` | Send Escape to a running subagent's active turn |
 | `subagents_list` | List available agent definitions (project-local `.pi/agents/` overrides global) |
 

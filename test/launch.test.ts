@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import {
   buildLaunchPlan,
   buildPiPromptArgs,
+  buildResumeLaunchPlan,
   buildSubagentToolAllowlist,
   shellEscape,
   type LaunchPlan,
@@ -430,6 +431,31 @@ describe("launch plan: structure", () => {
     const scriptPath = join(fx.root, "check.sh");
     writeFileSync(scriptPath, scriptOf(p));
     execFileSync("bash", ["-n", scriptPath]); // throws on syntax error
+  });
+  it("a resume runs in the cwd its session was created in, not the orchestrator's", () => {
+    const fx = makeFixture();
+    const ownTree = join(fx.root, "child-worktree");
+    mkdirSync(ownTree, { recursive: true });
+    const sessionFile = join(fx.root, "child.jsonl");
+    writeFileSync(
+      sessionFile,
+      `${
+        JSON.stringify({
+          type: "session",
+          id: "child",
+          timestamp: "2026-07-06T11:00:00.000Z",
+          cwd: ownTree,
+        })
+      }\n`,
+    );
+
+    const p = buildResumeLaunchPlan(
+      { sessionPath: sessionFile, name: "Resume" },
+      makeCtx(fx),
+    );
+
+    assert.equal(p.paneStart.cwd, ownTree);
+    assert.ok(scriptOf(p as unknown as LaunchPlan).includes(`cd ${shellEscape(ownTree)}`));
   });
 });
 

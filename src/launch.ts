@@ -23,7 +23,7 @@
 // buildSubagentToolAllowlist / buildPiPromptArgs / shellEscape and artifact
 // conventions ported from pi-interactive-subagents (MIT, HazAT)
 // pi-extension/subagents/{index.ts,cmux.ts} @ fix/launch-verify-retry.
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -503,6 +503,30 @@ export function resolveResumeLaunchBehavior(params: { autoExit?: boolean }): {
   return { autoExit, interactive: !autoExit };
 }
 
+/**
+ * The cwd a session was created in, read from pi's own session header.
+ *
+ * A resume that inherits the orchestrator's cwd silently drops the worktree the
+ * child was working in (measured 2026-09-09: 26 of 57 invocations ran from the
+ * main checkout, one of them committing straight to dev). pi records the cwd on
+ * the session's first line, so the child's own tree can win.
+ */
+export function sessionRecordedCwd(sessionPath: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(sessionPath, "r");
+    const buf = Buffer.alloc(8192);
+    const read = readSync(fd, buf, 0, buf.length, 0);
+    const firstLine = buf.subarray(0, read).toString("utf8").split("\n")[0];
+    const cwd = JSON.parse(firstLine)?.cwd;
+    return typeof cwd === "string" && cwd.length > 0 ? cwd : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 export interface ResumeLaunchPlan {
   id: string;
   name: string;
@@ -529,7 +553,9 @@ export interface ResumeLaunchPlan {
  * Plan a resume launch: pi --session <existing path> -e subagent-done.ts,
  * plus an optional @<artifact> follow-up message. Same wrapper-script
  * machinery (curated env, direnv wrap, exitcode sidecar, hold-open) as
- * buildLaunchPlan; the pane runs in the orchestrator's cwd.
+ * buildLaunchPlan. The pane runs in the cwd the session was created in — the
+ * child's worktree, not the orchestrator's — and in the orchestrator's cwd only
+ * when the session records none.
  *
  * NOTE: the executor must rmSync <sessionPath>.exit and <sessionPath>.exitcode
  * (force: true) before launching — stale sidecars from the previous run would
@@ -544,6 +570,8 @@ export function buildResumeLaunchPlan(
   const id = ctx.id ?? Math.random().toString(16).slice(2, 10);
   const displayName = params.name ?? "Resume";
   const { autoExit, interactive } = resolveResumeLaunchBehavior(params);
+
+  const targetCwd = sessionRecordedCwd(params.sessionPath) ?? ctx.parentCwd;
 
   const artifactDir = getArtifactDir(ctx.sessionDir, ctx.sessionId);
   const artifactTimestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -587,7 +615,7 @@ export function buildResumeLaunchPlan(
       ...(resumeMessageFile ? [`# Resume message file: ${resumeMessageFile}`] : []),
     ],
     exports,
-    cwd: ctx.parentCwd,
+    cwd: targetCwd,
     piArgv,
     sessionFile: params.sessionPath,
   });
@@ -604,7 +632,7 @@ export function buildResumeLaunchPlan(
     files,
     paneStart: {
       name: displayName,
-      cwd: ctx.parentCwd,
+      cwd: targetCwd,
       targetPaneId: env.HERDR_PANE_ID,
       direction: "right",
       launchScriptFile,
