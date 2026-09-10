@@ -98,10 +98,20 @@ export function peekContextUsageSidecar(sessionFile: string): ContextUsageSnapsh
 
 /** Percent of the context window a resume should warn about. */
 export const RESUME_CONTEXT_WARN_PERCENT = 60;
+/**
+ * …or this many tokens, whichever comes first.
+ *
+ * ⚠ THE FRACTION ALONE IS THE WRONG GATE ON THIS MACHINE, and the in-vivo check is what found it: the
+ * window here is 1,000,000 tokens, so 60% is 600k — while the sessions that actually cost money in the
+ * 2026-09-09 audit ran at 100–220k. The gate would never have fired on one of them. Cost is what
+ * re-sending a context costs, which is absolute, so the absolute number leads and the fraction stays
+ * as the backstop for a smaller window.
+ */
+export const RESUME_CONTEXT_WARN_TOKENS = 120_000;
 
 export function resumeContextNote(usage: ContextUsageSnapshot | null): string {
   if (!usage || usage.tokens === null || usage.percent === null) return "";
-  if (usage.percent < RESUME_CONTEXT_WARN_PERCENT) return "";
+  if (usage.percent < RESUME_CONTEXT_WARN_PERCENT && usage.tokens < RESUME_CONTEXT_WARN_TOKENS) return "";
   const k = Math.round(usage.tokens / 1000);
   return (
     ` ⚠ That session last held ${k}k tokens (${Math.round(usage.percent)}% of its window), and a resume` +
