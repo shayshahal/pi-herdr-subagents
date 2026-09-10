@@ -298,6 +298,11 @@ Useful tricks:
   a `session_compact` the child is steered back to it. Measured 2026-09-09: six workers compacted
   and stopped with `firstKeptEntryId: ""` / `retainedTokens: 0`, because pi-blackhole's `minimal`
   tail behaviour cuts at the last user message and a dispatched worker has exactly one user turn.
+- **A resume of a session whose worktree is gone is refused, not launched**: pi checks the cwd its
+  session file records and, interactively, stops to ask a human whether to continue in the current
+  cwd. A pane launched for an agent has nobody to answer, so the resume would sit on that prompt with
+  the caller told it succeeded (measured 2026-09-10: zero entries written in six minutes). The tool
+  now returns the missing path and the two things that work — recreate it, or dispatch fresh.
 - **A resume is priced before it starts**: the result names the tokens the session last held, and
   warns past 120k tokens or 60% of the window, whichever comes first — a resume re-sends that whole
   context on every turn. The absolute gate leads on purpose: this machine's window is 1M, where 60%
