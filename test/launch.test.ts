@@ -516,6 +516,31 @@ describe("launch plan: task file export", () => {
     assert.match(artifact!.content, /Do the thing/);
   });
 
+  it("refuses to resume a session whose recorded cwd is gone, instead of hanging on pi's prompt", () => {
+    // Measured 2026-09-10: pi (interactive) stops at "cwd from session file does not exist / continue
+    // in current cwd" and a pane launched for an agent never answers it — the 20:14 probe sat there
+    // with zero entries in the session while the tool result said "resumed".
+    const fx = makeFixture();
+    const sessionFile = join(fx.root, "gone.jsonl");
+    const deleted = join(fx.root, "worktrees", "tjew662-city-filter");
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "c", cwd: deleted })}
+`);
+    assert.throws(
+      () => buildResumeLaunchPlan({ sessionPath: sessionFile, name: "Resume" }, makeCtx(fx)),
+      (err: any) => err.name === "ResumeCwdMissingError" && /no longer exists/.test(err.message) && err.message.includes(deleted),
+      "a deleted worktree must be refused with the path named, not launched into a prompt",
+    );
+  });
+
+  it("still resumes into the recorded cwd while it exists", () => {
+    const fx = makeFixture();
+    const sessionFile = join(fx.root, "child-cwd.jsonl");
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "c", cwd: fx.cwd })}
+`);
+    const p = buildResumeLaunchPlan({ sessionPath: sessionFile, name: "Resume" }, makeCtx(fx));
+    assert.equal(p.paneStart.cwd, fx.cwd);
+  });
+
   it("exports a resumed session's follow-up message as the task file", () => {
     const fx = makeFixture();
     const sessionFile = join(fx.root, "child.jsonl");

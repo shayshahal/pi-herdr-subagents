@@ -532,6 +532,34 @@ export function sessionRecordedCwd(sessionPath: string): string | null {
   }
 }
 
+/**
+ * The session's recorded cwd is gone — a deleted worktree.
+ *
+ * ⚠ MEASURED 2026-09-10, and it is why this refuses instead of launching: pi sees the same missing
+ * directory (`getMissingSessionCwdIssue`) and, in INTERACTIVE mode, stops to ask a human whether to
+ * continue in the current cwd. A pane launched for an agent has nobody to answer, so the resume sits
+ * on that prompt forever — a probe launched at 20:14 was still sitting there six minutes later, with
+ * zero entries written to the session and a tool result that said merely "resumed". In
+ * non-interactive mode pi exits 1 instead. Neither is a resume, so say so now, with the two things
+ * that actually work: bring the directory back, or dispatch fresh.
+ */
+export class ResumeCwdMissingError extends Error {
+  readonly sessionCwd: string;
+  readonly fallbackCwd: string;
+
+  constructor(sessionCwd: string, fallbackCwd: string) {
+    super(
+      `the session's working directory no longer exists (${sessionCwd}), and pi would stop at a prompt ` +
+        `asking a human whether to continue in ${fallbackCwd} — a pane launched for an agent never ` +
+        `answers it and the run never starts. Recreate that directory (or its worktree), or dispatch a ` +
+        `fresh subagent instead of resuming this one.`,
+    );
+    this.name = "ResumeCwdMissingError";
+    this.sessionCwd = sessionCwd;
+    this.fallbackCwd = fallbackCwd;
+  }
+}
+
 export interface ResumeLaunchPlan {
   id: string;
   name: string;
@@ -576,7 +604,11 @@ export function buildResumeLaunchPlan(
   const displayName = params.name ?? "Resume";
   const { autoExit, interactive } = resolveResumeLaunchBehavior(params);
 
-  const targetCwd = sessionRecordedCwd(params.sessionPath) ?? ctx.parentCwd;
+  const recordedCwd = sessionRecordedCwd(params.sessionPath);
+  if (recordedCwd && !existsSync(recordedCwd)) {
+    throw new ResumeCwdMissingError(recordedCwd, ctx.parentCwd);
+  }
+  const targetCwd = recordedCwd ?? ctx.parentCwd;
 
   const artifactDir = getArtifactDir(ctx.sessionDir, ctx.sessionId);
   const artifactTimestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
