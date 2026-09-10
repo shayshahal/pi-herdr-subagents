@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  failureBudgetNotice,
+  isFailedToolExecution,
   parseDeniedTools,
+  parseFailureBudget,
   shouldAutoExitOnAgentEnd,
   shouldMarkUserTookOver,
   writeExitSidecar,
@@ -169,6 +172,56 @@ describe("subagent-done: module", () => {
       getAllTools: () => [],
     } as any);
     assert.deepEqual(shortcuts, ["alt+j"]);
+  });
+});
+
+describe("subagent-done: failure budget", () => {
+  it("treats an isError result and a non-zero shell exit as failures", () => {
+    assert.equal(isFailedToolExecution({ isError: true }), true);
+    assert.equal(isFailedToolExecution({ result: { exitCode: 1 } }), true);
+    assert.equal(isFailedToolExecution({ result: { details: { exitCode: 2 } } }), true);
+    assert.equal(isFailedToolExecution({ result: { exitCode: 0 } }), false);
+    assert.equal(isFailedToolExecution({}), false);
+  });
+
+  it("warns at the budget, then every budget after, and never below it", () => {
+    assert.equal(failureBudgetNotice(4, 5), null);
+    assert.match(failureBudgetNotice(5, 5)!, /BUDGET: 5 consecutive/);
+    assert.equal(failureBudgetNotice(6, 5), null);
+    assert.match(failureBudgetNotice(10, 5)!, /BUDGET: 10 consecutive/);
+  });
+
+  it("is disabled by a budget of 0 and defaulted when unset or invalid", () => {
+    assert.equal(failureBudgetNotice(99, 0), null);
+    assert.equal(parseFailureBudget(undefined), 5);
+    assert.equal(parseFailureBudget("nonsense"), 5);
+    assert.equal(parseFailureBudget("0"), 0);
+  });
+
+  it("steers the child once the failure budget is reached, and a success resets it", async () => {
+    const handlers = new Map<string, (event: any) => void>();
+    const sent: Array<{ content?: string }> = [];
+    const mod = await import("../subagent-done.ts");
+    mod.default({
+      on: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
+      registerTool: () => {},
+      registerShortcut: () => {},
+      getAllTools: () => [],
+      sendMessage: (message: { content?: string }) => sent.push(message),
+    } as any);
+
+    const fail = () => handlers.get("tool_execution_end")!({ isError: true });
+    for (let i = 0; i < 4; i++) fail();
+    assert.equal(sent.length, 0, "nothing before the budget");
+    fail();
+    assert.equal(sent.length, 1, "one steer at the budget");
+    assert.match(sent[0].content!, /consecutive tool failures/);
+
+    handlers.get("tool_execution_end")!({ isError: false });
+    for (let i = 0; i < 4; i++) fail();
+    assert.equal(sent.length, 1, "a success resets the run of failures");
+    fail();
+    assert.equal(sent.length, 2, "a fresh run warns again");
   });
 });
 

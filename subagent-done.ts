@@ -61,6 +61,37 @@ export function shouldAutoExitOnAgentEnd(
   return true;
 }
 
+/**
+ * Failure budget: consecutive failed tool executions before the child is told to
+ * stop and report instead of retrying. Measured 2026-09-09: a day's 57 worker
+ * invocations carried 28-failure loops and 61 test-runs in one session, each
+ * retry re-billing the whole context. 0 disables the budget.
+ */
+export const DEFAULT_FAILURE_BUDGET = 5;
+
+export function parseFailureBudget(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_FAILURE_BUDGET;
+}
+
+/** A failed tool execution, across the shapes pi reports: `isError`, or a non-zero shell exit. */
+export function isFailedToolExecution(event: { isError?: boolean; result?: any }): boolean {
+  if (event.isError) return true;
+  const code = event.result?.exitCode ?? event.result?.details?.exitCode;
+  return typeof code === "number" && code !== 0;
+}
+
+/** The steer text for a run of failures, or null when it is not a checkpoint. */
+export function failureBudgetNotice(consecutive: number, budget: number): string | null {
+  if (budget <= 0 || consecutive < budget || consecutive % budget !== 0) return null;
+  return [
+    `⛔ BUDGET: ${consecutive} consecutive tool failures.`,
+    "Do not retry the same command again. Stop and make the failure visible:",
+    "write what you tried, what failed, and the exact command output you have,",
+    "then call subagent_done. A session that keeps failing is billed for every retry.",
+  ].join(" ");
+}
+
 export function parseDeniedTools(rawValue: string | undefined): string[] {
   return (rawValue ?? "")
     .split(",")
@@ -96,6 +127,8 @@ export default function (pi: ExtensionAPI) {
   const subagentAgent = process.env.PI_SUBAGENT_AGENT ?? "";
   const deniedToolsValue = process.env.PI_DENY_TOOLS;
   const autoExit = process.env.PI_SUBAGENT_AUTO_EXIT === "1";
+  const failureBudget = parseFailureBudget(process.env.PI_SUBAGENT_FAILURE_BUDGET);
+  let consecutiveFailures = 0;
 
   function renderWidget(ctx: { ui: { setWidget: Function } }) {
     ctx.ui.setWidget(
@@ -230,6 +263,14 @@ export default function (pi: ExtensionAPI) {
       // the latest agent turn completed normally, not by who initiated it.
       userTookOver = false;
     }
+  });
+
+  // The failure budget: steer a child out of a retry loop before it re-bills the
+  // whole context again. Fires at the budget, then every budget after.
+  pi.on("tool_execution_end", (event) => {
+    consecutiveFailures = isFailedToolExecution(event) ? consecutiveFailures + 1 : 0;
+    const notice = failureBudgetNotice(consecutiveFailures, failureBudget);
+    if (notice) pi.sendMessage({ customType: "failure-budget", content: notice, display: true });
   });
 
   // User-driven exits do not pass through a terminal tool or clean agent_end.

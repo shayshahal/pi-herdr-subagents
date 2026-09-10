@@ -291,6 +291,9 @@ Useful tricks:
   the exact child environment and invocation.
 - Every failure steer carries the child session path; `pi --session <path>` resumes it, or use
   `subagent_resume`.
+- **Failure budget**: after 5 consecutive failed tool calls the child is steered to stop and report
+  instead of retrying (each retry re-bills its whole context). `PI_SUBAGENT_FAILURE_BUDGET=0`
+  disables it, any other integer sets the threshold.
 
 ## Known limitations / upstream notes
 
