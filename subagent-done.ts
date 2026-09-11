@@ -301,6 +301,23 @@ export default function (pi: ExtensionAPI) {
 
   // pi-blackhole compacts a worker's single user turn away entirely (see
   // compactionTaskNotice); put the task back in front of the child when it does.
+  //
+  // ⚠ STILL UNVERIFIED ON A REAL COMPACTION (2026-09-11). Five attempts, all measured:
+  // · the default model (openai-codex) was over its usage limit, so a worker child dies instantly at
+  //   0 tokens — `Codex error: The usage limit has been reached`;
+  // · the free provider 429s (`FreeUsageLimitError`, then `Connection error`), which is also what
+  //   stalls a child after its first two tool calls;
+  // · no child session in three days sits above ~70k live context, and retained tool output is capped
+  //   at 20k tokens, so reads cannot push one past blackhole's 81k threshold;
+  // · lowering `compactAfterTokens` for ONE directory (`<cwd>/.pi/pi-blackhole-config.json`, created
+  //   and deleted for the attempt) produced no compaction at 15k or at 5k — autoExit and interactive
+  //   children alike — so the threshold is not the lever it looks like.
+  // The shortest path when a provider has budget: copy a session that already re-sends ~132k tokens,
+  // run `PI_SUBAGENT_TASK_FILE=<task> pi -e subagent-done.ts --session <copy> @<task>`, and let one
+  // turn complete — it loads at 68% of a 200k window and only needs agent_end to compact.
+  // Until then this arm rests on `compactionTaskNotice`'s tests plus two negative observations that
+  // DID hold: a session with no launch-time task file gets no steer, and a non-child session that
+  // compacted 11 times correctly got none either.
   pi.on("session_compact", () => {
     const notice = compactionTaskNotice(process.env.PI_SUBAGENT_TASK_FILE);
     if (notice) pi.sendMessage({ customType: "task-after-compact", content: notice, display: true }, { triggerTurn: true });
