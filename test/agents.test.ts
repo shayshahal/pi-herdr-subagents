@@ -411,7 +411,7 @@ describe("agents.ts", () => {
 
   describe("resolveEffectiveSessionMode / resolveLaunchBehavior", () => {
     it("resolves session mode with fork override precedence", () => {
-      assert.equal(resolveEffectiveSessionMode({ name: "A", task: "T" }, null), "standalone");
+      assert.equal(resolveEffectiveSessionMode({ name: "A", task: "T" }, null), "lineage-only");
       assert.equal(
         resolveEffectiveSessionMode({ name: "A", task: "T" }, { sessionMode: "lineage-only" }),
         "lineage-only",
@@ -427,8 +427,8 @@ describe("agents.ts", () => {
 
     it("resolves launch behavior for standalone, lineage-only, and fork modes", () => {
       assert.deepEqual(resolveLaunchBehavior({ name: "A", task: "T" }, null), {
-        sessionMode: "standalone",
-        seededSessionMode: null,
+        sessionMode: "lineage-only",
+        seededSessionMode: "lineage-only",
         inheritsConversationContext: false,
         taskDelivery: "artifact",
       });

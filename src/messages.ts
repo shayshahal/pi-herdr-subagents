@@ -99,6 +99,7 @@ export function buildOutcomeMessage(
   const usageSuffix = contextUsageLine(opts?.contextUsage);
 
   const baseDetails: Record<string, unknown> = {
+    id: running.id,
     name: running.name,
     task: running.task,
     agent: running.agent,

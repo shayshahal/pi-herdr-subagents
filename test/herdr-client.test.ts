@@ -165,6 +165,47 @@ describe("HerdrClient", () => {
     assert.deepEqual(calls[0].args, ["pane", "rename", "w1:p2", "Worker"]);
   });
 
+  it("paneReportMetadata publishes and clears a token", async () => {
+    const { exec, calls } = fakeExec([{ stdout: "" }, { stdout: "" }]);
+    const client = createHerdrClient({ exec });
+
+    await client.paneReportMetadata("w1:p2", {
+      source: "pi-subagents:work-v1",
+      token: "pi_subagents_work_v1=hash:1:123",
+      ttlMs: 30_000,
+    });
+    await client.paneReportMetadata("w1:p2", {
+      source: "pi-subagents:work-v1",
+      clearToken: "pi_subagents_work_v1",
+      ttlMs: 30_000,
+    });
+
+    assert.deepEqual(calls.map((call) => call.args), [
+      [
+        "pane",
+        "report-metadata",
+        "w1:p2",
+        "--source",
+        "pi-subagents:work-v1",
+        "--token",
+        "pi_subagents_work_v1=hash:1:123",
+        "--ttl-ms",
+        "30000",
+      ],
+      [
+        "pane",
+        "report-metadata",
+        "w1:p2",
+        "--source",
+        "pi-subagents:work-v1",
+        "--clear-token",
+        "pi_subagents_work_v1",
+        "--ttl-ms",
+        "30000",
+      ],
+    ]);
+  });
+
   it("error envelope surfaces code+message", async () => {
     const errorEnvelope = JSON.stringify({
       error: { code: "pane_not_found", message: "pane w1:p4 not found" },

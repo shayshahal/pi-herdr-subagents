@@ -199,7 +199,7 @@ export function resolveEffectiveSessionMode(
   agentDefs: AgentDefaults | null,
 ): SubagentSessionMode {
   if (params.fork) return "fork";
-  return agentDefs?.sessionMode ?? "standalone";
+  return agentDefs?.sessionMode ?? "lineage-only";
 }
 
 export function resolveLaunchBehavior(

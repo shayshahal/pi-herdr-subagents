@@ -37,6 +37,11 @@ import {
   resolveSplitDirection,
   type HerdrClient,
 } from "./src/herdr/client.ts";
+import {
+  createHerdrWorkReporter,
+  HERDR_WORK_METADATA_SOURCE,
+  type HerdrWorkReporter,
+} from "./src/herdr/work.ts";
 import { createHerdrEventStream } from "./src/herdr/events.ts";
 import {
   consumeContextUsageSidecar,
@@ -81,6 +86,7 @@ const HERDR_PLUGIN_DIR = join(dirname(MODULE_PATH), "herdr-plugin");
 const ABORT_KEY = Symbol.for("pi-herdr-subagents/abort-controller");
 const STREAM_KEY = Symbol.for("pi-herdr-subagents/event-stream");
 const WIDGET_INTERVAL_KEY = Symbol.for("pi-herdr-subagents/widget-interval");
+const WORK_REPORTER_KEY = Symbol.for("pi-herdr-subagents/work-reporter");
 
 {
   const prevAbort = (globalThis as any)[ABORT_KEY] as AbortController | undefined;
@@ -94,6 +100,10 @@ const WIDGET_INTERVAL_KEY = Symbol.for("pi-herdr-subagents/widget-interval");
   const prevInterval = (globalThis as any)[WIDGET_INTERVAL_KEY];
   if (prevInterval) clearInterval(prevInterval);
   (globalThis as any)[WIDGET_INTERVAL_KEY] = null;
+
+  const prevWorkReporter = (globalThis as any)[WORK_REPORTER_KEY] as HerdrWorkReporter | undefined;
+  if (prevWorkReporter) void prevWorkReporter.stop();
+  (globalThis as any)[WORK_REPORTER_KEY] = null;
 }
 
 function getModuleAbortSignal(): AbortSignal {
@@ -200,6 +210,88 @@ let latestCtx: ExtensionContext | null = null;
 
 /** Last herdr agent_status seen per pane; refreshed opportunistically for the widget. */
 const latestAgentStatuses = new Map<string, string>();
+
+/** Delivered child reports awaiting a settled parent continuation. */
+const pendingSubagentResults = new Set<string>();
+const consumedSubagentResults = new Set<string>();
+
+let workReporter: HerdrWorkReporter | null = null;
+
+function getOutstandingWorkCount(): number {
+  return new Set([...runningSubagents.keys(), ...pendingSubagentResults]).size;
+}
+
+function updateWorkMetadata(): void {
+  if (!workReporter) return;
+  void workReporter.publish(getOutstandingWorkCount());
+}
+
+function recordPendingSubagentResult(id: string, send: () => void): void {
+  pendingSubagentResults.add(id);
+  consumedSubagentResults.delete(id);
+  updateWorkMetadata();
+  try {
+    send();
+  } catch (error) {
+    pendingSubagentResults.delete(id);
+    consumedSubagentResults.delete(id);
+    updateWorkMetadata();
+    throw error;
+  }
+}
+
+function consumeSubagentResults(messages: readonly unknown[]): void {
+  for (const message of messages) {
+    if (!message || typeof message !== "object" || !("role" in message)) continue;
+    if (message.role !== "custom" || !("customType" in message)) continue;
+    if (!["subagent_result", "subagent_ping"].includes(String(message.customType))) continue;
+    if (!("details" in message) || !message.details || typeof message.details !== "object") continue;
+    if ("id" in message.details && typeof message.details.id === "string") {
+      if (pendingSubagentResults.has(message.details.id)) consumedSubagentResults.add(message.details.id);
+    }
+  }
+}
+
+function settleConsumedSubagentResults(): void {
+  for (const id of consumedSubagentResults) pendingSubagentResults.delete(id);
+  consumedSubagentResults.clear();
+  updateWorkMetadata();
+}
+
+async function startWorkReporter(ctx: ExtensionContext): Promise<void> {
+  if (ctx.mode !== "tui" || !isInsideHerdr() || workReporter) return;
+  const paneId = process.env.HERDR_PANE_ID;
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  const reportMetadata = deps.client.paneReportMetadata?.bind(deps.client);
+  if (!paneId || !sessionFile || !reportMetadata) return;
+
+  const status = await deps.client.ping();
+  if (!status.ok || typeof status.protocol !== "number" || status.protocol < 22) return;
+
+  const reporter = createHerdrWorkReporter({
+    sessionFile,
+    report: async (request) => {
+      await reportMetadata(paneId, {
+        source: HERDR_WORK_METADATA_SOURCE,
+        ...(request.token ? { token: request.token } : {}),
+        ...(request.clearToken ? { clearToken: request.clearToken } : {}),
+        ttlMs: request.ttlMs,
+      });
+    },
+  });
+  workReporter = reporter;
+  (globalThis as any)[WORK_REPORTER_KEY] = reporter;
+  await reporter.publish(getOutstandingWorkCount());
+}
+
+async function stopWorkReporter(): Promise<void> {
+  const reporter = workReporter;
+  workReporter = null;
+  if (reporter) await reporter.stop();
+  if ((globalThis as any)[WORK_REPORTER_KEY] === reporter) {
+    (globalThis as any)[WORK_REPORTER_KEY] = null;
+  }
+}
 
 export function isInsideHerdr(env: Record<string, string | undefined> = process.env): boolean {
   return env.HERDR_ENV === "1" && !!env.HERDR_PANE_ID && !!env.HERDR_SOCKET_PATH;
@@ -361,6 +453,7 @@ function armWatcher(
 
   runningSubagents.set(running.id, running);
   markSubagentActive(running.id);
+  updateWorkMetadata();
   startWidgetRefresh();
 
   void deps
@@ -382,21 +475,34 @@ function armWatcher(
         mapOutcome ? mapOutcome(outcome) : outcome,
         { contextUsage, sessionId: getSessionId(running.sessionFile) },
       );
-      if (message) pi.sendMessage(message, { triggerTurn: true, deliverAs: "steer" });
+      if (message) {
+        recordPendingSubagentResult(running.id, () => {
+          pi.sendMessage(message, { triggerTurn: true, deliverAs: "steer" });
+        });
+      } else {
+        updateWorkMetadata();
+      }
     })
     .catch((err: any) => {
       runningSubagents.delete(running.id);
       markSubagentInactive(running.id);
       updateWidget();
-      pi.sendMessage(
-        {
-          customType: "subagent_result",
-          content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
-          display: true,
-          details: { name: running.name, task: running.task, error: err?.message ?? String(err) },
-        },
-        { triggerTurn: true, deliverAs: "steer" },
-      );
+      recordPendingSubagentResult(running.id, () => {
+        pi.sendMessage(
+          {
+            customType: "subagent_result",
+            content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
+            display: true,
+            details: {
+              id: running.id,
+              name: running.name,
+              task: running.task,
+              error: err?.message ?? String(err),
+            },
+          },
+          { triggerTurn: true, deliverAs: "steer" },
+        );
+      });
     })
     .finally(() => {
       moduleSignal.removeEventListener("abort", onModuleAbort);
@@ -1216,6 +1322,9 @@ export default function herdrSubagents(pi: ExtensionAPI) {
       }
     }
 
+    // Optional tree metadata is independent of launch capability and fails open.
+    void startWorkReporter(ctx).catch(() => {});
+
     // Cheap, asynchronous readiness check. Import stays side-effect free; tool
     // execution awaits the same promise so setup failures stop before artifacts
     // or panes are created.
@@ -1234,18 +1343,30 @@ export default function herdrSubagents(pi: ExtensionAPI) {
       });
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("context", (event) => {
+    consumeSubagentResults(event.messages);
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    if (ctx.isIdle()) settleConsumedSubagentResults();
+  });
+
+  pi.on("session_shutdown", async () => {
+    const workReporterStop = stopWorkReporter();
     stopWidgetRefresh();
     for (const running of runningSubagents.values()) {
       running.abortController?.abort();
       markSubagentInactive(running.id);
     }
     runningSubagents.clear();
+    pendingSubagentResults.clear();
+    consumedSubagentResults.clear();
     latestAgentStatuses.clear();
     const stream = (globalThis as any)[STREAM_KEY] as WatcherStream | null;
     if (stream) stream.close();
     (globalThis as any)[STREAM_KEY] = null;
     ((globalThis as any)[ABORT_KEY] as AbortController).abort();
+    await workReporterStop;
   });
 
   // Steer message renderers (registered regardless of activation so past
@@ -1278,8 +1399,11 @@ export const __test__ = {
       markSubagentInactive(running.id);
     }
     runningSubagents.clear();
+    pendingSubagentResults.clear();
+    consumedSubagentResults.clear();
     latestAgentStatuses.clear();
     latestCtx = null;
+    void stopWorkReporter();
     stopWidgetRefresh();
     const stream = (globalThis as any)[STREAM_KEY] as WatcherStream | null;
     if (stream) stream.close();

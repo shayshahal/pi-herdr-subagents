@@ -116,6 +116,9 @@ function createFakePi(opts?: { allTools?: FakeToolInfo[] }) {
     fire(event: string, eventObj: unknown, ctx: unknown) {
       for (const handler of handlers.get(event) ?? []) handler(eventObj, ctx);
     },
+    async fireAsync(event: string, eventObj: unknown, ctx: unknown) {
+      await Promise.all((handlers.get(event) ?? []).map((handler) => handler(eventObj, ctx)));
+    },
   };
 }
 
@@ -319,6 +322,26 @@ describe("index: activation guard", () => {
 
     await waitFor(() => notifications.length > 0);
     assert.match(notifications[0].message, /not reachable/i);
+  });
+
+  it("does not publish optional work metadata below Herdr protocol 22", async () => {
+    envInsideHerdr();
+    let reportCalls = 0;
+    __test__.setDeps({
+      client: makeFakeClient({
+        ping: async () => ({ ok: true, version: "0.8.2", protocol: 14 }),
+        paneReportMetadata: async () => {
+          reportCalls += 1;
+        },
+      }),
+    });
+    const fake = createFakePi();
+    herdrSubagents(fake.api);
+    const { ctx } = makeFakeCtx();
+    fake.fire("session_start", {}, { ...ctx, mode: "tui" });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(reportCalls, 0);
   });
 
   it("inside herdr with an old version → actionable upgrade warning", async () => {
@@ -572,6 +595,91 @@ describe("index: subagent tool", () => {
     assert.doesNotMatch(fake.sent[0].message.content, /Context:/);
     assert.equal("contextUsage" in fake.sent[0].message.details, false);
     assert.equal(existsSync(telemetryPath), false, "stale telemetry is consumed");
+  });
+
+  it("publishes Herdr Tree work metadata for running children and cleanup", async () => {
+    envInsideHerdr();
+    const reports: Array<{ token?: string; clearToken?: string; ttlMs: number }> = [];
+    let releaseClear!: () => void;
+    const clearPending = new Promise<void>((resolve) => {
+      releaseClear = resolve;
+    });
+    let settle!: (outcome: SubagentOutcome) => void;
+    const pending = new Promise<SubagentOutcome>((resolve) => {
+      settle = resolve;
+    });
+    __test__.setDeps({
+      client: makeFakeClient({
+        ping: async () => ({ ok: true, version: "0.9.0", protocol: 22 }),
+        paneReportMetadata: async (_paneId: string, request: { token?: string; clearToken?: string; ttlMs: number }) => {
+          reports.push(request);
+          if (request.clearToken) await clearPending;
+        },
+      }),
+      watch: async () => pending,
+      createStream: () => makeFakeStream() as any,
+    });
+    const fake = createFakePi();
+    herdrSubagents(fake.api);
+    const fx = makeSpawnFixture();
+    fake.fire("session_start", {}, { ...fx.ctx, mode: "tui" });
+
+    const { tool } = { tool: fake.findTool("subagent")! };
+    await tool.execute("t1", { name: "Worker", task: "do it" }, undefined, undefined, fx.ctx);
+    await waitFor(() => reports.some((report) => report.token?.includes(":1:")));
+
+    settle({ kind: "completed", summary: "done", exitCode: 0 });
+    await waitFor(() => __test__.runningSubagents.size === 0 && fake.sent.length === 1);
+    assert.match(reports.at(-1)?.token ?? "", /:1:/, "delivered result remains pending");
+
+    fake.fire("context", { messages: [{ role: "custom", ...fake.sent[0].message }] }, fx.ctx);
+    fake.fire("agent_settled", {}, { ...fx.ctx, isIdle: () => true });
+    await waitFor(() => reports.some((report) => report.token?.includes(":0:")));
+
+    let shutdownSettled = false;
+    const shutdown = fake.fireAsync("session_shutdown", {}, fx.ctx).then(() => {
+      shutdownSettled = true;
+    });
+    await waitFor(() => reports.some((report) => report.clearToken === "pi_subagents_work_v1"));
+    await Promise.resolve();
+    assert.equal(shutdownSettled, false, "shutdown waits for the metadata clear");
+    releaseClear();
+    await shutdown;
+    assert.equal(shutdownSettled, true);
+  });
+
+  it("keeps a delivered ping pending until the parent settles", async () => {
+    envInsideHerdr();
+    const reports: Array<{ token?: string }> = [];
+    __test__.setDeps({
+      client: makeFakeClient({
+        ping: async () => ({ ok: true, version: "0.9.0", protocol: 22 }),
+        paneReportMetadata: async (_paneId: string, request: { token?: string }) => {
+          reports.push(request);
+        },
+      }),
+      watch: async () => ({ kind: "ping", name: "Worker", message: "need input" }),
+      createStream: () => makeFakeStream() as any,
+    });
+    const fake = createFakePi();
+    herdrSubagents(fake.api);
+    const fx = makeSpawnFixture();
+    fake.fire("session_start", {}, { ...fx.ctx, mode: "tui" });
+
+    await fake.findTool("subagent")!.execute(
+      "t1",
+      { name: "Worker", task: "do it" },
+      undefined,
+      undefined,
+      fx.ctx,
+    );
+    await waitFor(() => __test__.runningSubagents.size === 0 && fake.sent.length === 1);
+    assert.equal(fake.sent[0].message.customType, "subagent_ping");
+    assert.match(reports.at(-1)?.token ?? "", /:1:/, "delivered ping remains pending");
+
+    fake.fire("context", { messages: [{ role: "custom", ...fake.sent[0].message }] }, fx.ctx);
+    fake.fire("agent_settled", {}, { ...fx.ctx, isIdle: () => true });
+    await waitFor(() => reports.some((report) => report.token?.includes(":0:")));
   });
 
   it("publishes the active watcher count for nested orchestrator auto-exit", async () => {

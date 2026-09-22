@@ -44,6 +44,16 @@ export interface PluginInfo {
   [key: string]: unknown;
 }
 
+export interface PaneReportMetadataOptions {
+  source: string;
+  agent?: string;
+  appliesToSource?: string;
+  token?: string;
+  clearToken?: string;
+  seq?: number;
+  ttlMs?: number;
+}
+
 export const HERDR_PLUGIN_ID = "pi-herdr-subagents";
 export const HERDR_PLUGIN_ENTRYPOINT = "subagent";
 export const HERDR_PLUGIN_ARGV_ENTRYPOINT = "argv";
@@ -88,6 +98,8 @@ export interface HerdrClient {
   paneGet(paneId: string): Promise<PaneInfo | null>;
   paneRead(paneId: string, lines: number, signal?: AbortSignal): Promise<string | null>;
   paneList(): Promise<PaneInfo[]>;
+  /** Publish or clear optional display metadata for one pane. */
+  paneReportMetadata(paneId: string, options: PaneReportMetadataOptions): Promise<void>;
   /** Geometry of the tab containing the pane (best-effort; null when unavailable). */
   paneLayout?(paneId?: string): Promise<PaneLayout | null>;
   paneClose(paneId: string): Promise<void>;
@@ -285,6 +297,17 @@ export function createHerdrClient(opts?: { exec?: ExecFn; bin?: string }): Herdr
     async paneList() {
       const result = await execHerdrJson<{ panes?: PaneInfo[] }>(["pane", "list"]);
       return result.panes ?? [];
+    },
+
+    async paneReportMetadata(paneId, options) {
+      const args = ["pane", "report-metadata", paneId, "--source", options.source];
+      if (options.agent) args.push("--agent", options.agent);
+      if (options.appliesToSource) args.push("--applies-to-source", options.appliesToSource);
+      if (options.token) args.push("--token", options.token);
+      if (options.clearToken) args.push("--clear-token", options.clearToken);
+      if (options.seq !== undefined) args.push("--seq", String(options.seq));
+      if (options.ttlMs !== undefined) args.push("--ttl-ms", String(options.ttlMs));
+      await execHerdr(args);
     },
 
     async paneLayout(paneId) {

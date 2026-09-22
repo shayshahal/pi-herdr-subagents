@@ -271,8 +271,8 @@ describe("launch plan: pi argv", () => {
     assert.equal(argv[argv.indexOf("--session") + 1], p.sessionFile);
     assert.equal(argv[argv.indexOf("-e") + 1], donePath);
     assert.ok(donePath.startsWith("/"));
-    // standalone → artifact-backed task delivery
-    assert.ok(p.taskArtifactFile, "task artifact expected for standalone mode");
+    // lineage-only defaults to artifact-backed task delivery
+    assert.ok(p.taskArtifactFile, "task artifact expected for lineage-only mode");
     assert.equal(argv[argv.length - 1], `@${p.taskArtifactFile}`);
   });
 
@@ -354,7 +354,7 @@ describe("launch plan: task delivery", () => {
 
   it("standalone mode writes the task artifact with wrapper instructions", () => {
     const fx = makeFixture();
-    const p = plan(fx, { task: "Fix the bug" }, { autoExit: true });
+    const p = plan(fx, { task: "Fix the bug" }, { autoExit: true, sessionMode: "standalone" });
     assert.equal(p.seedSession, null);
     const task = p.files.find((f) => f.path === p.taskArtifactFile);
     assert.ok(task);
@@ -364,9 +364,9 @@ describe("launch plan: task delivery", () => {
     assert.match(p.taskArtifactFile!, /context\/worker-.*\.md$/);
   });
 
-  it("lineage-only mode seeds without fork content and uses artifact delivery", () => {
+  it("lineage-only is the default and seeds without fork content", () => {
     const fx = makeFixture();
-    const p = plan(fx, {}, { sessionMode: "lineage-only" });
+    const p = plan(fx);
     assert.equal(p.seedSession?.mode, "lineage-only");
     assert.ok(p.taskArtifactFile);
   });

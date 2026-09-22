@@ -227,10 +227,19 @@ Set `PI_HERDR_DIRENV=0` or an explicit `PI_HERDR_LAUNCH_PREFIX` to override.
 Agent definitions in project-local `.pi/agents/*.md` or global `~/.pi/agent/agents/*.md` are read
 with the same frontmatter semantics as pi-interactive-subagents (name, description, tools,
 deny-tools, model, thinking, spawning, auto-exit, interactive, session-mode, systemPromptMode,
-…) — the same defs drive both extensions during the transition. The package templates are not a
-runtime fallback; `/subagents-init` explicitly copies them into one of these user-owned
-locations. A `subagent_done` / `caller_ping` child extension is loaded into every child for the
-completion handshake.
+…) — the same defs drive both extensions during the transition. New children default to
+`session-mode: lineage-only`, which records their parent session for Herdr tree views without
+copying the parent's conversation. Set `session-mode: standalone` explicitly to omit that link,
+or use `fork: true` / `session-mode: fork` to inherit the conversation.
+
+When [herdr-pi-tree](https://github.com/edxeth/herdr-pi-tree) is installed, the orchestrator also
+publishes its optional `pi_subagents_work_v1` token. The count includes running children plus
+child reports (`subagent_result` and `subagent_ping`) delivered to Pi but not yet consumed by a
+settled parent turn; the tree subtracts children that already have visible rows. Herdr protocol
+versions below 22 simply skip this optional metadata.
+The package templates are not a runtime fallback; `/subagents-init` explicitly copies them into one
+of these user-owned locations. A `subagent_done` / `caller_ping` child extension is loaded into
+every child for the completion handshake.
 
 ## Lifecycle: every child ends in exactly one honest state
 
@@ -342,4 +351,5 @@ live sessions and global Herdr/pi config are never touched.
 MIT. Portions (agent-def parsing, session seeding, steer formats, child extension) ported from
 [pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents) (MIT, HazAT);
 herdr CLI envelope-parsing pattern adapted from
-[pi-herdr](https://github.com/ogulcancelik/pi-extensions) (MIT).
+[pi-herdr](https://github.com/ogulcancelik/pi-extensions) (MIT); Herdr Pi Tree work metadata
+reporting adapted from [edxeth/pi-subagents](https://github.com/edxeth/pi-subagents) (MIT, edxeth).
