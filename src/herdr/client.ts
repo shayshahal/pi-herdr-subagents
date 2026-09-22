@@ -49,6 +49,27 @@ export const HERDR_PLUGIN_ENTRYPOINT = "subagent";
 export const HERDR_PLUGIN_ARGV_ENTRYPOINT = "argv";
 export const MIN_HERDR_VERSION = "0.8.2";
 
+export interface PaneLayoutRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  [key: string]: unknown;
+}
+
+export interface PaneLayoutPane {
+  pane_id: string;
+  focused?: boolean;
+  rect: PaneLayoutRect;
+  [key: string]: unknown;
+}
+
+export interface PaneLayout {
+  panes: PaneLayoutPane[];
+  focused_pane_id?: string;
+  [key: string]: unknown;
+}
+
 export interface HerdrClient {
   /**
    * Split a plugin-owned pane beside the orchestrator and dispatch one generated
@@ -67,6 +88,8 @@ export interface HerdrClient {
   paneGet(paneId: string): Promise<PaneInfo | null>;
   paneRead(paneId: string, lines: number, signal?: AbortSignal): Promise<string | null>;
   paneList(): Promise<PaneInfo[]>;
+  /** Geometry of the tab containing the pane (best-effort; null when unavailable). */
+  paneLayout?(paneId?: string): Promise<PaneLayout | null>;
   paneClose(paneId: string): Promise<void>;
   paneSendKeys(paneId: string, keys: string[]): Promise<void>;
   ping(): Promise<PingResult>;
@@ -264,6 +287,17 @@ export function createHerdrClient(opts?: { exec?: ExecFn; bin?: string }): Herdr
       return result.panes ?? [];
     },
 
+    async paneLayout(paneId) {
+      const args = ["pane", "layout"];
+      if (paneId) args.push("--pane", paneId);
+      try {
+        const result = await execHerdrJson<{ layout?: PaneLayout }>(args);
+        return result.layout ?? null;
+      } catch {
+        return null;
+      }
+    },
+
     async paneClose(paneId) {
       await execHerdrJson(["pane", "close", paneId]);
     },
@@ -300,4 +334,36 @@ export function createHerdrClient(opts?: { exec?: ExecFn; bin?: string }): Herdr
       return result.plugins?.find((plugin) => plugin.plugin_id === pluginId) ?? null;
     },
   };
+}
+
+/** Split along the long axis: wide panes go right, narrow/tall panes go down. */
+export function pickSplitDirection(width: number, height: number): "right" | "down" {
+  return width > height ? "right" : "down";
+}
+
+/**
+ * Geometry-aware split direction for the target pane. Best-effort: any
+ * failure (old mocks, old herdr, unparseable layout) falls back to "right",
+ * preserving the previous hardcoded behavior.
+ */
+export async function resolveSplitDirection(
+  client: Pick<HerdrClient, "paneLayout">,
+  targetPaneId?: string,
+): Promise<"right" | "down"> {
+  try {
+    const layout = await client.paneLayout?.(targetPaneId);
+    const panes = layout?.panes ?? [];
+    const target =
+      panes.find((p) => p.pane_id === targetPaneId) ??
+      panes.find((p) => p.focused) ??
+      panes[0];
+    const width = target?.rect?.width;
+    const height = target?.rect?.height;
+    if (typeof width === "number" && typeof height === "number") {
+      return pickSplitDirection(width, height);
+    }
+  } catch {
+    // fall through to default
+  }
+  return "right";
 }

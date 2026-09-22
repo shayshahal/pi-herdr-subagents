@@ -34,6 +34,7 @@ import {
   createHerdrClient,
   HERDR_PLUGIN_ID,
   MIN_HERDR_VERSION,
+  resolveSplitDirection,
   type HerdrClient,
 } from "./src/herdr/client.ts";
 import { createHerdrEventStream } from "./src/herdr/events.ts";
@@ -564,6 +565,8 @@ async function executeSubagentSpawn(
 
   let started;
   try {
+    // Geometry-aware split: wide parent goes right, narrow/tall goes down.
+    plan.paneStart.direction = await resolveSplitDirection(deps.client, plan.paneStart.targetPaneId);
     started = await deps.client.paneStart(plan.paneStart);
   } catch (error: any) {
     const message = error?.message ?? String(error);
@@ -790,6 +793,8 @@ async function executeSubagentResume(
 
   let started;
   try {
+    // Geometry-aware split: wide parent goes right, narrow/tall goes down.
+    plan.paneStart.direction = await resolveSplitDirection(deps.client, plan.paneStart.targetPaneId);
     started = await deps.client.paneStart(plan.paneStart);
   } catch (error: any) {
     const message = error?.message ?? String(error);
