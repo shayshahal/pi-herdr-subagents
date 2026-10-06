@@ -509,6 +509,38 @@ describe("index: subagent tool", () => {
     assert.equal(watchedStream, fakeStream);
   });
 
+  // 2026-10-06: after a /new in one pi process, every subagent of the new session failed with
+  // "Subagent extension reloaded before pane launch": the old session's shutdown had aborted the
+  // shared controller, and nothing made a new one. pi may rebind the new session before or after
+  // the old one shuts down; both orders must leave the new session able to launch.
+  for (const order of ["old shutdown, then new start", "new start, then old shutdown"] as const) {
+    it(`a new session in the same pi launches (${order})`, async () => {
+      envInsideHerdr();
+      const fx = makeSpawnFixture();
+      __test__.setDeps({
+        client: makeFakeClient(),
+        watch: async (): Promise<SubagentOutcome> => ({ kind: "completed", summary: "done", exitCode: 0 }),
+        createStream: () => makeFakeStream() as any,
+      });
+      const old = createFakePi();
+      herdrSubagents(old.api);
+      old.fire("session_start", {}, fx.ctx);
+      const next = createFakePi();
+      herdrSubagents(next.api);
+      if (order === "old shutdown, then new start") {
+        await old.fireAsync("session_shutdown", {}, fx.ctx);
+        next.fire("session_start", {}, fx.ctx);
+      } else {
+        next.fire("session_start", {}, fx.ctx);
+        await old.fireAsync("session_shutdown", {}, fx.ctx);
+      }
+
+      const result = await next.findTool("subagent")!.execute("t1", { name: "Worker", task: "do it" }, undefined, undefined, fx.ctx);
+
+      assert.equal(result.details.status, "started", JSON.stringify(result.content));
+    });
+  }
+
   it("outcome wiring: completed outcome → subagent_result steer wakes the orchestrator", async () => {
     const { fake, tool } = registerAndGetTool();
     const fx = makeSpawnFixture();

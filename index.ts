@@ -1276,6 +1276,7 @@ function registerCommands(pi: ExtensionAPI): void {
 // ── extension entry ─────────────────────────────────────────────────────────
 
 export default function herdrSubagents(pi: ExtensionAPI) {
+  let sessionAbort: AbortController | null = null;
   const inHerdr = isInsideHerdr();
 
   // Tools denied via PI_DENY_TOOLS env var (set by parent agent based on frontmatter)
@@ -1299,6 +1300,12 @@ export default function herdrSubagents(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
+    // Each session gets its own abort controller, and its shutdown aborts only that one. A /new or
+    // a session switch in one pi process shuts the old session down without re-running this
+    // module's load block, so a shutdown that aborted the shared one left every later launch
+    // refused (2026-10-06: "reloaded before pane launch" on each subagent of a /new session).
+    sessionAbort = new AbortController();
+    (globalThis as any)[ABORT_KEY] = sessionAbort;
 
     if (!inHerdr) {
       // Defer: only provide setup-hint stubs when nothing else provides
@@ -1365,7 +1372,7 @@ export default function herdrSubagents(pi: ExtensionAPI) {
     const stream = (globalThis as any)[STREAM_KEY] as WatcherStream | null;
     if (stream) stream.close();
     (globalThis as any)[STREAM_KEY] = null;
-    ((globalThis as any)[ABORT_KEY] as AbortController).abort();
+    sessionAbort?.abort();
     await workReporterStop;
   });
 
