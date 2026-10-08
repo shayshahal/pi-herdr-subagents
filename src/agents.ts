@@ -36,6 +36,12 @@ export interface AgentDefaults {
   spawning?: boolean;
   autoExit?: boolean;
   interactive?: boolean;
+  /**
+   * `false` launches the child with `--no-mcp`, so the built-in MCP extension
+   * never connects any configured server. Pi's flag is all-or-nothing: it
+   * cannot keep one server and drop another. Absent means enabled.
+   */
+  mcp?: boolean;
   systemPromptMode?: "append" | "replace";
   sessionMode?: SubagentSessionMode;
   cwd?: string;
@@ -140,6 +146,7 @@ export function parseAgentDefinition(
     spawning: parseOptionalBoolean(getFrontmatterValue(frontmatter, "spawning")),
     autoExit: parseOptionalBoolean(getFrontmatterValue(frontmatter, "auto-exit")),
     interactive: parseOptionalBoolean(getFrontmatterValue(frontmatter, "interactive")),
+    mcp: parseOptionalBoolean(getFrontmatterValue(frontmatter, "mcp")),
     sessionMode: parseSessionMode(getFrontmatterValue(frontmatter, "session-mode")),
     cwd: getFrontmatterValue(frontmatter, "cwd"),
     cli: getFrontmatterValue(frontmatter, "cli"),

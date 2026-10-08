@@ -94,6 +94,7 @@ describe("agents.ts", () => {
         "spawning: false",
         "auto-exit: true",
         "interactive: false",
+        "mcp: false",
         "session-mode: fork",
         "cwd: sub/dir",
         "cli: pi",
@@ -116,6 +117,7 @@ describe("agents.ts", () => {
       assert.equal(parsed.spawning, false);
       assert.equal(parsed.autoExit, true);
       assert.equal(parsed.interactive, false);
+      assert.equal(parsed.mcp, false);
       assert.equal(parsed.sessionMode, "fork");
       assert.equal(parsed.cwd, "sub/dir");
       assert.equal(parsed.cli, "pi");

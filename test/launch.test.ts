@@ -332,6 +332,18 @@ describe("launch plan: pi argv", () => {
     assert.ok(!plan(fx).piArgv.includes("--tools"));
   });
 
+  it("passes --no-mcp when the agent sets mcp: false", () => {
+    const fx = makeFixture();
+    assert.ok(plan(fx, {}, { mcp: false }).piArgv.includes("--no-mcp"));
+  });
+
+  it("omits --no-mcp by default", () => {
+    const fx = makeFixture();
+    assert.ok(!plan(fx).piArgv.includes("--no-mcp"));
+    assert.ok(!plan(fx, {}, {}).piArgv.includes("--no-mcp"));
+    assert.ok(!plan(fx, {}, { mcp: true }).piArgv.includes("--no-mcp"));
+  });
+
   it("passes skill prompts with the empty-separator trick for artifact delivery", () => {
     const fx = makeFixture();
     const p = plan(fx, {}, { skills: "review,lint" });

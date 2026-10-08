@@ -226,7 +226,7 @@ Set `PI_HERDR_DIRENV=0` or an explicit `PI_HERDR_LAUNCH_PREFIX` to override.
 
 Agent definitions in project-local `.pi/agents/*.md` or global `~/.pi/agent/agents/*.md` are read
 with the same frontmatter semantics as pi-interactive-subagents (name, description, tools,
-deny-tools, model, thinking, spawning, auto-exit, interactive, session-mode, systemPromptMode,
+deny-tools, model, thinking, spawning, auto-exit, interactive, mcp, session-mode, systemPromptMode,
 …) — the same defs drive both extensions during the transition. New children default to
 `session-mode: lineage-only`, which records their parent session for Herdr tree views without
 copying the parent's conversation. Set `session-mode: standalone` explicitly to omit that link,

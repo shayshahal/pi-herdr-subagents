@@ -395,6 +395,12 @@ export function buildLaunchPlan(
     piArgv.push("--tools", toolAllowlist);
   }
 
+  // `mcp: false` turns the built-in MCP extension off for the child, so no
+  // configured server is spawned. All-or-nothing by design of the flag.
+  if (agentDefs?.mcp === false) {
+    piArgv.push("--no-mcp");
+  }
+
   // Task delivery: fork inherits the conversation → direct arg; blank-session
   // modes get the artifact-backed handoff so wrapper instructions arrive as
   // the initial user message.
